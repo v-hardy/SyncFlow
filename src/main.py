@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, Tuple, Set, List
 
 class SyncEngine:
-    # Inicio el objeto DB que contendra a los metadatos
+# <======================================= INICIAR OBJETO =======================================>    
     def __init__(self, pc_root: Path, usb_root: Path, db_name: str = "metadata.db"):
         self.pc_root = pc_root.resolve()
         self.usb_root = usb_root.resolve()
@@ -19,7 +19,7 @@ class SyncEngine:
         # Asegurar carpeta oculta en PC
         (self.pc_root / ".sync").mkdir(exist_ok=True)
 
-    # Calculo metadato, devuelvo HASH, que posteriormente se carga en DB asociado a Path
+# <======================================= OBTENER HASH =======================================>
     def calculate_sha256(self, path: Path, chunk_size: int = 8192) -> str:
         sha256 = hashlib.sha256()
         with open(path, "rb") as f:
@@ -27,7 +27,7 @@ class SyncEngine:
                 sha256.update(chunk)
         return sha256.hexdigest()
 
-    # Genero diccionario de metadatos(size, mtime, hash_or_none) del directorio Path
+# <======================================= GENERAR DICCIONARIO CON METADATOS =======================================>
     def scan_directory(self, root: Path) -> Dict[str, Tuple[int, float, str]]:
         """
         Devuelve dict: 
@@ -42,6 +42,7 @@ class SyncEngine:
                 snapshot[rel_path] = (stat.st_size, stat.st_mtime, None)  # hash calculado bajo demanda
         return snapshot
     
+# <======================================= INICIALIZAR DB =======================================>
     def create_schema(self, conn):
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS files (
@@ -55,7 +56,8 @@ class SyncEngine:
         CREATE INDEX IF NOT EXISTS idx_deleted ON files(deleted);
         """)
         conn.commit()
- 
+
+# <======================================= ESTABLECER CONEXION A DB =======================================>
     def get_db_connection(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
@@ -63,6 +65,7 @@ class SyncEngine:
         self.create_schema(conn)  # Creo tabla de registros SQL solo si no existe aun
         return conn  # Retorno objeto conexion
 
+# <======================================= CARGAR DB =======================================>
     def load_snapshot_from_db(self, db_path: Path) -> Tuple[Dict, Dict]:
         """
         Devuelve (live_files, tombstones)
@@ -88,6 +91,7 @@ class SyncEngine:
         conn.close()
         return live, tombstones
 
+# <======================================= ACTUALIZAR DB =======================================>
     def update_db_after_sync(self, pc_current: Dict, usb_current: Dict):
         # Combinar estado final (deberían ser idénticos)
         final_snapshot = {}
@@ -154,7 +158,7 @@ class SyncEngine:
             # No crítico, pero loguear
             print(f"Warning: No se pudo copiar backup a PC: {e}")
 
-    # Listar acciones sobre archivos para su posterior ejecucion
+# <======================================= LISTAR ACCIONES =======================================>
     def decide_actions(self, pc_current: Dict, usb_current: Dict, db_live: Dict, db_tombstones: Dict):
         actions = {
             'copy_pc_to_usb': [],      # (src_path, dst_path, rel_path)
@@ -170,18 +174,18 @@ class SyncEngine:
             pc_entry = pc_current.get(rel_path)
             usb_entry = usb_current.get(rel_path)
             db_entry = db_live.get(rel_path)
-            db_tombstone_entry = db_tombstones.get(rel_path)  # esto faltaba creo
+            db_tombstone_entry = db_tombstones.get(rel_path)
 
             # Caso 1: Eliminado en un lado (tombstone o ausencia física con entrada en DB)
-            if db_tombstone_entry:  # rel_path in db_tombstones:
+            if db_tombstone_entry: 
                 if pc_entry:
                     actions['delete_pc'].append(rel_path)
                 if usb_entry:
                     actions['delete_usb'].append(rel_path)
                 continue
 
-            # Caso 2: Nuevo en ambos con mismo nombre
-            if pc_entry and usb_entry and rel_path not in db_live:
+            # Caso 2: Nuevo en ambos lados con mismo nombre
+            if pc_entry and usb_entry and not db_entry:
                 pc_size, pc_mtime, _ = pc_entry
                 usb_size, usb_mtime, _ = usb_entry
                 if pc_size != usb_size or abs(pc_mtime - usb_mtime) > 1:  # tolerancia 1s
@@ -194,12 +198,12 @@ class SyncEngine:
                 continue
 
             # Caso 3: Solo en PC
-            if pc_entry and not usb_entry and rel_path not in db_live:
+            if pc_entry and not usb_entry and not db_entry:
                 actions['copy_pc_to_usb'].append((self.pc_root / rel_path, self.usb_root / rel_path, rel_path))
                 continue
 
             # Caso 4: Solo en USB
-            if usb_entry and not pc_entry and rel_path not in db_live:
+            if usb_entry and not pc_entry and not db_entry:
                 actions['copy_usb_to_pc'].append((self.usb_root / rel_path, self.pc_root / rel_path, rel_path))
                 continue
 
@@ -231,6 +235,7 @@ class SyncEngine:
 
         return actions
 
+# <======================================= EJECUTAR ACCIONES =======================================>
     def execute_actions(self, actions: dict, max_retries: int = 3):
         # 1. Eliminaciones primero
         for rel_path in actions['delete_pc']:
@@ -268,6 +273,7 @@ class SyncEngine:
             if not success:
                 raise RuntimeError(f"Falló copia definitiva de {rel_path} tras {max_retries} intentos")
 
+# <======================================= Sincronizacion bidireccional =======================================>
     def sync(self):
         print("Iniciando sincronización bidireccional...")
 
@@ -290,7 +296,7 @@ class SyncEngine:
 
         print("Sincronización completada exitosamente.")
 
-# Uso con detección automática (recomendado con fallback)
+# <======================================= Detección automática con fallback =======================================>
 def main():
     pc_root = Path.home() / "Datos"
 
@@ -312,7 +318,7 @@ def main():
     engine.sync()
 
 # ====================
-# Uso de ejemplo
+# PROCESO
 # ====================
 if __name__ == "__main__":
     main()
