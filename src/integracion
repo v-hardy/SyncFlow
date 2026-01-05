@@ -1,0 +1,26 @@
+3. Cómo integrarlo en tu flujo de sincronización
+
+Al escanear PC o pendrive → compara contra get_live_snapshot(conn) + considera tombstones.
+Al borrar → mark_deleted en lugar de borrar la fila.
+Al final de sync exitosa → actualizas synced_at y guardas la DB con escritura atómica:
+
+Pythondef atomic_write_db(temp_path: str, final_path: str):
+    # Copia o guarda en temp_path primero
+    shutil.copy2(temp_path, final_path + ".tmp")
+    os.replace(final_path + ".tmp", final_path)  # Rename atómico en la mayoría de FS
+4. Bonus para la futura web (Flask/FastAPI ejemplo rápido)
+Pythonfrom flask import Flask, jsonify
+
+app = Flask(__name__)
+
+@app.route('/api/files')
+def list_files():
+    conn = get_db_connection('/ruta/a/metadata.db')
+    cursor = conn.execute("""
+        SELECT rel_path, size, datetime(mtime, 'unixepoch') as modified
+        FROM files WHERE deleted=0 ORDER BY rel_path
+    """)
+    files = [dict(row) for row in cursor.fetchall()]
+    return jsonify(files)
+Con esto tienes una base robusta, eficiente y extensible. Copia el esquema a un archivo schema.sql, usa las funciones Python y estarás listo para implementar el resto del algoritmo sin preocuparte por la persistencia.
+¿Quieres que te pase también un ejemplo completo de la clase SyncEngine que maneje todo el flujo (escaneo, decisión, ejecución)? Dime y te lo armo. ¡Éxito con el proyecto!
