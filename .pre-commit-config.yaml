@@ -1,0 +1,9 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.0
+    hooks:
+      # Linter: Reemplaza a Flake8, isort, etc.
+      - id: ruff
+        args: ["--fix"]
+      # Formatter: Reemplaza a Black
+      - id: ruff-format

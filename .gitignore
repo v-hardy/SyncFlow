@@ -1,0 +1,4 @@
+.venv/
+ejemplo_full-read/
+__pycache__/
+*.pyc

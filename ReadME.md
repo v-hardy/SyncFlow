@@ -1,0 +1,18 @@
+# 🚧 Proyecto Sync Tool - ¡En Construcción! 🚧
+
+
+## Esceneario:
+
+Cuando conectás el USB, el algoritmo arranca: compara cada fila de la base maestra del pendrive con la local, usando la clave primaria. Si los metadatos son iguales, nada. Si el del USB es más nuevo, copia ese registro a la PC con su fecha. Si el de la PC es más nuevo... no hace nada, pero lo anota en un log: alerta, este lado anda adelantado. Ahí termina esa fase. Desconectás el pendrive, empezás a laburar: cualquier cosa que cambies —crear, editar, borrar— no va directo a la base local, sino que se registra en el delta, archivo de movimientos: clave tal, operación insert/update/delete, dato nuevo, hora de ahora. Después, cuando volvés a enchufar, abre todo: maestro, local y delta. Primero copia lo del maestro sobre la local si hace falta, como antes. Luego toma el delta y va fila por fila: si dice insert y no está en el maestro, lo mete; si update y sí está, lo sobreescribe; si delete y existe, lo saca de los dos lados. Al final, vacía el delta, copia el maestro limpio sobre la local y listo. Todo sin perder datos, resolviendo choques por metadatos.
+
+## Detalles de uso:
+| Escenario                           | Comando                                                                                                                       | Descripción                                                                                                     |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **Uso básico (Windows)**            | `python run_sync.py --pc-root C:/Users/yo/data --usb-root E:/data`                                                            | Ejecuta el sync normal usando paths de PC y USB, DB por defecto (`metadata.db`) y log por defecto (`sync.log`). |
+| **Uso básico (Linux/macOS)**        | `python3 run_sync.py --pc-root /home/yo/data --usb-root /media/usb/data`                                                      | Igual que el anterior, adaptado a rutas de Unix.                                                                |
+| **Simulación / Dry-run**            | `python run_sync.py --pc-root C:/Users/yo/data --usb-root E:/data --dry-run`                                                  | Simula el sync sin modificar archivos ni la DB.                                                                 |
+| **Cambiar nombre de la DB**         | `python run_sync.py --pc-root C:/Users/yo/data --usb-root E:/data --db-name maestro.db`                                       | Usa `maestro.db` en lugar de `metadata.db`.                                                                     |
+| **Cambiar archivo de log**          | `python run_sync.py --pc-root C:/Users/yo/data --usb-root E:/data --log logs/sync_2026.log`                                   | Guarda los logs en la ruta especificada.                                                                        |
+| **Argumentos extra para `main.py`** | `python run_sync.py --pc-root C:/Users/yo/data --usb-root E:/data --extra-flag1 --extra-flag2`                                | Cualquier flag no reconocido por el lanzador se pasa directamente a `main.py`.                                  |
+| **Alias Linux/macOS**               | `alias run_sync="python3 /ruta/a/tu/proyecto/run_sync.py"` <br> `run_sync --pc-root /home/yo/data --usb-root /media/usb/data` | Permite ejecutar el lanzador con un comando corto desde cualquier terminal.                                     |
+

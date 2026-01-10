@@ -1,0 +1,22 @@
+[tool.ruff]
+# Ajustes generales (compartidos por linter y formateador)
+line-length = 88
+target-version = "py310"
+
+[tool.lint]
+# Selección de reglas
+# E, F: Pyflakes y errores de Pycodestyle
+# B: Bugbear (errores comunes)
+# I: Isort (orden de imports)
+# UP: Pyupgrade (actualiza sintaxis a Python 3.10+)
+select = ["E", "F", "B", "I", "UP"]
+ignore = ["E501"] # Ignora líneas largas (el formateador se encarga)
+
+[tool.lint.isort]
+known-first-party = ["sync"] # Nombre del modulo
+
+[tool.format]
+# Ruff-format usa por defecto 88 caracteres y comillas dobles,
+# igual que Black, así que no suele hacer falta configurar nada más.
+quote-style = "double"
+indent-style = "space"
