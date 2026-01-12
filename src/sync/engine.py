@@ -15,8 +15,8 @@ class EngineSync:
         self.pc_root = pc_root.resolve()
         self.usb_root = usb_root.resolve()
         self.db_pc_path = self.pc_root / ".sync" / db_name
+        self.db_temp_path = self.pc_root / ".sync" / f"{db_name}.tmp"
         self.db_usb_path = self.usb_root / db_name
-        self.temp_db_path = self.usb_root / f"{db_name}.tmp"
 
         # Asegurar carpeta oculta en PC
         (self.pc_root / ".sync").mkdir(exist_ok=True)
@@ -51,8 +51,8 @@ class EngineSync:
 
     # <======================================= DESCARGAR CAMBIOS =======================================>
     def sync_from_usb(self, log_fn=print):
-        usb_conn = self.get_db_connection(self.usb_db)
-        loc_conn = self.get_db_connection(self.local_db)
+        usb_conn = self.get_db_connection(self.db_usb_path)
+        loc_conn = self.get_db_connection(self.db_pc_path)
 
         with loc_conn:
             loc_conn.execute("BEGIN IMMEDIATE")
@@ -136,3 +136,53 @@ class EngineSync:
 
         usb_conn.close()
         loc_conn.close()
+
+    # <======================================= OBTENER CAMBIOS =======================================>
+    def get_movements(self, root_path: dict, log_fn=print):
+        # CLAVE: rel_path -> VALOR: (size, mtime, hash_or_none)
+        # Contar con los datos de la DB abierta
+        # Comparo CLAVES, SI los metadatos cambian -> registrar en MOVIMIENTOS
+        pass
+
+    # <======================================= SUBIR CAMBIOS =======================================>
+    def apply_movements(self, log_fn=print):
+        loc_conn = self.get_db_connection(
+            self.db_pc_path
+        )  # agregar condicion que si movimientos esta vacio salga
+        temp_conn = self.get_db_connection(self.db_temp_path)
+
+        with temp_conn:
+            temp_conn.execute("BEGIN IMMEDIATE")
+
+            movements = loc_conn.execute(
+                """SELECT * FROM movements ORDER BY id"""
+            ).fetchall()
+
+            for m in movements:
+                op = m["op_type"]
+                init_hash = m["init_hash"]
+                op_time = m["op_time"]
+
+                temp_row = temp_conn.execute(
+                    "SELECT * FROM files WHERE init_hash=?", (init_hash,)
+                ).fetchone()
+
+                # =========================
+                # CREATE
+                # =========================
+                if op == "CREATE":
+                    if temp_row:
+                        continue  # ya existe, no duplicar
+
+                    src = self.pc_root / m["new_rel_path"]
+                    dst = self.usb_root / m["new_rel_path"]
+
+                    copy_file(src, dst)
+                    h = sha256_file(dst)
+
+                    temp_conn.execute(
+                        "INSERT INTO files VALUES (?,?,?,?)",
+                        (init_hash, h, m["new_rel_path"], op_time),
+                    )
+
+                    log_fn(f"[USB CREATE] {init_hash}")

@@ -6,9 +6,9 @@ import traceback
 from pathlib import Path
 import logging
 
-from sync_from_usb import EngineSync
-from apply_movements import apply_movements
+from engine import EngineSync
 from dry_run import dry_run
+from fsutil import walk_directory_metadata
 
 
 # =========================
@@ -45,7 +45,10 @@ def main():
     )
 
     parser.add_argument(
-        "--pc-root", required=True, type=Path, help="Directorio raíz local"
+        "--pc-root",
+        required=True,
+        type=Path,
+        help="Directorio raíz local",
     )
     parser.add_argument(
         "--usb-root",
@@ -54,13 +57,21 @@ def main():
         help="Directorio raíz de archivos en el USB",
     )
     parser.add_argument(
-        "--db-name", default=str("metadata.db"), type=str, help="Nombre DB SQL Maestro"
+        "--db-name",
+        default=str("metadata.db"),
+        type=str,
+        help="Nombre DB SQL Maestro",
     )
     parser.add_argument(
-        "--log", default=Path("sync.log"), type=Path, help="Archivo de log"
+        "--log",
+        default=Path("sync.log"),
+        type=Path,
+        help="Archivo de log",
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="Simula el sync sin aplicar cambios"
+        "--dry-run",
+        action="store_true",
+        help="Simula el sync sin aplicar cambios",
     )
 
     args = parser.parse_args()
@@ -77,7 +88,9 @@ def main():
 
         # Instancia de motor
         engine = EngineSync(
-            pc_root=args.pc_root, usb_root=args.usb_root, db_name=args.db_name
+            pc_root=args.pc_root,
+            usb_root=args.usb_root,
+            db_name=args.db_name,
         )
 
         # ==================================================
@@ -96,16 +109,18 @@ def main():
         engine.sync_from_usb(log_fn=logging.info)
 
         # -------------------------
+        # FASE 2
+        # -------------------------
+        # escaneo dir local y comparo con db local para obtener movimiwento
+        logging.info("FASE 2: Obteniendo movimientos locales")
+        directory_tree = walk_directory_metadata(engine.pc_root)
+        engine.get_movements(directory_tree, log_fn=logging.info)
+
+        # -------------------------
         # FASE 3
         # -------------------------
         logging.info("FASE 3: Aplicando movimientos locales → USB")
-        apply_movements(
-            usb_root=args.usb_root,
-            usb_db=args.usb_db,
-            local_root=args.local_root,
-            local_db=args.local_db,
-            log_fn=logging.info,
-        )
+        engine.apply_movements(log_fn=logging.info)
 
         logging.info("===== SYNC FINALIZADA OK =====")
 

@@ -9,14 +9,19 @@ target-version = "py310"
 # B: Bugbear (errores comunes)
 # I: Isort (orden de imports)
 # UP: Pyupgrade (actualiza sintaxis a Python 3.10+)
-select = ["E", "F", "B", "I", "UP"]
+# COM812: Trailing comma missing
+select = ["E", "F", "B", "I", "UP", "COM812",]
 ignore = ["E501"] # Ignora líneas largas (el formateador se encarga)
 
 [tool.lint.isort]
 known-first-party = ["sync"] # Nombre del modulo
+force-single-line = false
+split-on-trailing-comma = true
 
 [tool.format]
 # Ruff-format usa por defecto 88 caracteres y comillas dobles,
 # igual que Black, así que no suele hacer falta configurar nada más.
 quote-style = "double"
 indent-style = "space"
+# Asegúrate de que esto esté en false (es el valor por defecto)
+skip-magic-trailing-comma = false
