@@ -1,43 +1,61 @@
 PRAGMA foreign_keys = ON;
 
--- =========================
--- Tabla principal de archivos
--- =========================
-CREATE TABLE IF NOT EXISTS files (
-    init_hash TEXT PRIMARY KEY,
-    content_hash TEXT NOT NULL,
-    rel_path TEXT NOT NULL,
-    timestamp INTEGER NOT NULL
+-- ===============================
+-- Maestro de estado de archivos
+-- ===============================
+CREATE TABLE IF NOT EXISTS master_states (
+    init_hash      TEXT PRIMARY KEY,
+    rel_path       TEXT NOT NULL,
+    content_hash   TEXT NOT NULL,
+    last_op_time   INTEGER NOT NULL,
+    last_machine   TEXT NOT NULL
 );
 
--- =========================
+-- ===============================
 -- Tombstones (borrados)
--- =========================
+-- ===============================
 CREATE TABLE IF NOT EXISTS tombstones (
-    init_hash TEXT PRIMARY KEY,
-    deleted_at INTEGER NOT NULL,
-    machine_name TEXT NOT NULL
+    init_hash       TEXT PRIMARY KEY,
+    content_hash    TEXT NOT NULL,
+    deleted_at      INTEGER NOT NULL,
+    machine_name    TEXT NOT NULL
 );
 
--- =========================
+-- ===============================
 -- Movimientos (delta)
--- =========================
+-- ===============================
 CREATE TABLE IF NOT EXISTS movements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    op_type TEXT CHECK(op_type IN ('CREATE','MODIFY','MOVE','DELETE')) NOT NULL,
-    init_hash TEXT NOT NULL,
-    old_rel_path TEXT,
-    new_rel_path TEXT,
-    content_hash TEXT,
-    op_time INTEGER NOT NULL,
-    machine_name TEXT NOT NULL
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    init_hash       TEXT,
+    op_type         TEXT NOT NULL CHECK(op_type IN ('CREATE','MODIFY','MOVE','DELETE')),
+    rel_path        TEXT,
+    new_rel_path    TEXT,
+    content_hash    TEXT,
+    op_time         INTEGER NOT NULL,
+    machine_name    TEXT NOT NULL,
+    --
+    CHECK (
+        (op_type = 'CREATE' AND rel_path IS NOT NULL AND new_rel_path IS NULL) OR
+        (op_type = 'MODIFY' AND rel_path IS NOT NULL AND new_rel_path IS NULL) OR
+        (op_type = 'MOVE'   AND rel_path IS NOT NULL AND new_rel_path IS NOT NULL) OR
+        (op_type = 'DELETE' AND rel_path IS NOT NULL AND new_rel_path IS NULL)
+    )
 );
 
-CREATE INDEX IF NOT EXISTS idx_mov_init_hash ON movements(init_hash);
+CREATE INDEX idx_mov_init_hash_time ON movements(init_hash, op_time);
+CREATE INDEX idx_mov_time ON movements(op_time);          
 
--- =========================
+-- ===============================
 -- Archivo histórico
--- =========================
-CREATE TABLE IF NOT EXISTS movements_archive AS
-SELECT *, NULL AS applied_at FROM movements WHERE 0;
-
+-- ===============================
+CREATE TABLE IF NOT EXISTS movements_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    op_type         TEXT CHECK(op_type IN ('CREATE','MODIFY','MOVE','DELETE')) NOT NULL,
+    init_hash       TEXT NOT NULL,
+    rel_path        TEXT,
+    new_rel_path    TEXT,
+    content_hash    TEXT,
+    op_time         INTEGER NOT NULL,
+    machine_name    TEXT NOT NULL,
+    applied_time    INTEGER
+);
