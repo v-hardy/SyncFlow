@@ -1,188 +1,236 @@
-import sqlite3
 import socket
 from pathlib import Path
 
-
-from hashutil import sha256_file
-from fsutil import copy_file, move_file
-
-MACHINE = socket.gethostname()
+from database import DB
+from domain import MovementRules, CurrentState
+from fs_util import FSOps
+from meta_util import walk_directory_metadata, sha256_file
 
 
 class EngineSync:
     # <======================================= INICIAR OBJETO =======================================>
     def __init__(self, pc_root: Path, usb_root: Path, db_name: str):
+        self.machine_name = socket.gethostname()
         self.pc_root = pc_root.resolve()
         self.usb_root = usb_root.resolve()
-        self.db_pc_path = self.pc_root / ".sync" / db_name
-        self.db_temp_path = self.pc_root / ".sync" / f"{db_name}.tmp"
-        self.db_usb_path = self.usb_root / db_name
+        self.db = DB(self.pc_root, self.usb_root, db_name)
+        self.fs = FSOps  # (self.pc_root, self.usb_root)
 
-        # Asegurar carpeta oculta en PC
-        (self.pc_root / ".sync").mkdir(exist_ok=True)
+    # <======================================= FASE 1: SINC DESDE USB =======================================>
+    def replicateMaster(self, log_fn=print):
+        with self.db.get_db_connection(self.db.db_usb_path) as usb_conn:
+            if self.db.table_is_empty(usb_conn, "master_states"):
+                return
+            primary_master = self.db.read_states(usb_conn)
+            primary_tombstones = self.db.read_tombstones(usb_conn)
 
-    # <======================================= INICIALIZAR DB =======================================>
-    def create_schema(self, conn):
-        # Definimos la ruta al archivo .sql
-        # (Asumiendo que está en la misma carpeta que tu script)
-        sql_file_path = Path(__file__).parent / "schema.sql"
+        with self.db.get_db_connection(self.db.db_pc_path) as pc_conn:
+            if self.db.table_is_empty(pc_conn, "master_states"):
+                return
+            secundary_master = self.db.read_states(pc_conn)
 
-        try:
-            # Leemos el archivo SQL
-            with open(sql_file_path, "r", encoding="utf-8") as f:
-                sql_script = f.read()
+        if primary_master:
+            if secundary_master:
+                pc_index = {m["init_hash"]: m for m in secundary_master}
+                usb_index = {m["init_hash"]: m for m in primary_master}
+                tombstones_index = {m["init_hash"]: m for m in primary_tombstones}
 
-            # Ejecutamos todo el contenido
-            conn.executescript(sql_script)
-            conn.commit()
+                pc_hashes = set(pc_index)
+                usb_hashes = set(usb_index)
 
-        except FileNotFoundError:
-            print(f"Error: No se encontró el archivo {sql_file_path}")
-        except sqlite3.Error as e:
-            print(f"Error de SQLite al crear el esquema: {e}")
+                all_hashes = pc_hashes | usb_hashes  # (- .db)'s ?
 
-    # <======================================= ESTABLECER CONEXION A DB =======================================>
-    def get_db_connection(self, db_path: Path):
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row  # se devuelven como objetos tipo sqlite3.Row, que funcionan como un diccionario + tupla híbrido. Se accede a las columnas tanto por índice como por nombre, más legible y seguro
-        self.create_schema(conn)  # Creo tabla de registros SQL solo si no existe aun
-        return conn  # Retorno objeto conexion
+                for h in all_hashes:
+                    pc = pc_index.get(h)
+                    usb = usb_index.get(h)
 
-    # <======================================= DESCARGAR CAMBIOS =======================================>
-    def sync_from_usb(self, log_fn=print):
-        usb_conn = self.get_db_connection(self.db_usb_path)
-        loc_conn = self.get_db_connection(self.db_pc_path)
+                    # 1 Está en USB y NO en PC → copiar a PC
+                    if usb and not pc:
+                        self.fs.copy_file(self.pc_root, self.usb_root, usb["rel_path"])
+                        continue
 
-        with loc_conn:
-            loc_conn.execute("BEGIN IMMEDIATE")
+                    # 2 Está en PC y NO en USB → borrar en PC
+                    if pc and not usb:
+                        if tombstones_index.get(h):
+                            self.fs.delete_file(self.pc_root, pc["rel_path"])
+                        continue
 
-            usb_rows = usb_conn.execute(
-                "SELECT init_hash, content_hash, rel_path, timestamp FROM files"
-            )
+                    # 3 Está en ambos → comparar
+                    if usb and pc:
+                        # 3.1 Movido (mismo hash, distinto path, mismo contenido)
+                        if (
+                            usb["rel_path"] != pc["rel_path"]
+                            and usb["mtime"] == pc["mtime"]
+                        ):
+                            self.fs.move_file(
+                                self.pc_root, pc["rel_path"], usb["rel_path"]
+                            )
+                            continue
 
-            for u in usb_rows:
-                init_hash = u["init_hash"]
-                usb_path = self.usb_root / u["rel_path"]
+                        # 3.2 USB más reciente → copiar
+                        if (
+                            usb["mtime"] > pc["mtime"]
+                            and usb["content_hash"] != pc["content_hash"]
+                        ):
+                            self.fs.copy_file(
+                                self.pc_root, self.usb_root, usb["rel_path"]
+                            )
+                            continue
 
-                local_row = loc_conn.execute(
-                    "SELECT content_hash, rel_path FROM files WHERE init_hash=?",
-                    (init_hash,),
-                ).fetchone()
+                        # 3.3 Iguales o es un NUEVO archivo solo en pc → no hacer nada
 
-                # =========================
-                # CASO: solo en USB
-                # =========================
-                if local_row is None:
-                    dst = self.pc_root / u["rel_path"]
-                    copy_file(usb_path, dst)
+            else:
+                self.fs.copy_file(self.pc_root, self.usb_root, usb["rel_path"])
+        else:
+            pass
+            # SALTO A FASE 2
+            # o verifico si es un error que no haya primario y si uno secundario?
 
-                    new_hash = sha256_file(dst)
-                    if new_hash != u["content_hash"]:
-                        raise RuntimeError(f"Hash mismatch (NEW_FROM_USB): {init_hash}")
-
-                    loc_conn.execute(
-                        """INSERT INTO files VALUES (?,?,?,?)""",
-                        (init_hash, new_hash, u["rel_path"], u["timestamp"]),
-                    )
-
-                    log_fn(f"[NEW_FROM_USB] {init_hash}")
-                    continue
-
-                # =========================
-                # CASO: existe en ambos
-                # =========================
-                same_hash = u["content_hash"] == local_row["content_hash"]
-                same_path = u["rel_path"] == local_row["rel_path"]
-
-                src = usb_path
-                dst = self.pc_root / u["rel_path"]
-
-                if same_hash and same_path:
-                    continue
-
-                if same_hash and not same_path:
-                    old = self.pc_root / local_row["rel_path"]
-                    move_file(old, dst)
-
-                    loc_conn.execute(
-                        "UPDATE files SET rel_path=? WHERE init_hash=?",
-                        (u["rel_path"], init_hash),
-                    )
-
-                    log_fn(f"[MOVE_LOCAL] {init_hash}")
-                    continue
-
-                # contenido distinto → UPDATE
-                copy_file(src, dst)
-                new_hash = sha256_file(dst)
-
-                if new_hash != u["content_hash"]:
-                    raise RuntimeError(f"Hash mismatch (UPDATE): {init_hash}")
-
-                if not same_path:
-                    old = self.pc_root / local_row["rel_path"]
-                    if old.exists():
-                        old.unlink()
-
-                loc_conn.execute(
-                    """UPDATE files
-                    SET content_hash=?, rel_path=?, timestamp=?
-                    WHERE init_hash=?""",
-                    (new_hash, u["rel_path"], u["timestamp"], init_hash),
-                )
-
-                log_fn(f"[UPDATE_LOCAL] {init_hash}")
-
-        usb_conn.close()
-        loc_conn.close()
-
-    # <======================================= OBTENER CAMBIOS =======================================>
-    def get_movements(self, root_path: dict, log_fn=print):
-        # CLAVE: rel_path -> VALOR: (size, mtime, hash_or_none)
+    # <======================================= FASE 2: OBTENER DATOS DE CAMBIOS =======================================>
+    def get_movements(self, log_fn: print):
+        """
+        Compara el estado actual del filesystem con el estado guardado en la DB
+        y registra los movimientos (CREATE / MODIFY / MOVE / DELETE).
+        """
+        # dict{ CLAVE: rel_path , VALOR: tupla( size, mtime, hash_or_none ) }
         # Contar con los datos de la DB abierta
-        # Comparo CLAVES, SI los metadatos cambian -> registrar en MOVIMIENTOS
-        pass
+        # Comparo CLAVES, SI los metadatos cambian -> registrar en TABLA MOVEMENTS
 
-    # <======================================= SUBIR CAMBIOS =======================================>
-    def apply_movements(self, log_fn=print):
-        loc_conn = self.get_db_connection(
-            self.db_pc_path
-        )  # agregar condicion que si movimientos esta vacio salga
-        temp_conn = self.get_db_connection(self.db_temp_path)
+        directory_tree = walk_directory_metadata(self.pc_root)
 
-        with temp_conn:
-            temp_conn.execute("BEGIN IMMEDIATE")
+        with self.db.get_db_connection(self.db.db_pc_path) as pc_conn:
+            if self.db.table_is_empty(pc_conn, "master_states"):
+                return
+            secundary_master = self.db.read_states(pc_conn)
 
-            movements = loc_conn.execute(
-                """SELECT * FROM movements ORDER BY id"""
-            ).fetchall()
+        master_paths_index = {m["rel_path"]: m for m in secundary_master}
+        master_hashs_index = {m["content_hash"]: m for m in secundary_master}
 
-            for m in movements:
-                op = m["op_type"]
-                init_hash = m["init_hash"]
-                op_time = m["op_time"]
+        with self.db.get_db_connection(self.db.db_temp_path) as temp_conn:
+            for rel_path, (size, mtime, hash_or_none) in directory_tree.items():
+                print(f"Archivo: {rel_path}")
+                print(f"  Tamaño: {size} bytes")
+                print(f"  Modificado: {mtime}")
+                print(f"  Hash: {hash_or_none}")
+                print("-" * 20)
 
-                temp_row = temp_conn.execute(
-                    "SELECT * FROM files WHERE init_hash=?", (init_hash,)
-                ).fetchone()
+                # Trato todo el contenido FS
+                db_entry = master_paths_index.get(rel_path)
+                if db_entry is None:
+                    # NUEVA ENTRADA
+                    current_hash = sha256_file(rel_path)
+                    db_entry = master_hashs_index.get(current_hash)
+                    if db_entry is None:
+                        novedad = {
+                            "op_type": "CREATE",
+                            "init_hash": current_hash,
+                            "rel_path": rel_path,
+                            "new_rel_path": None,
+                            "content_hash": current_hash,
+                            "size": size,
+                            "op_time": mtime,
+                            "machine_name": self.machine_name,
+                        }
+                        self.db.upsert_movement(temp_conn, novedad, log_fn=print)
+                        log_fn(f"CREATE: {rel_path}")
+                    else:
+                        # Movido sin ser modificado
+                        novedad = {
+                            "op_type": "MOVE",
+                            "init_hash": db_entry["init_hash"],
+                            "rel_path": db_entry["rel_path"],
+                            "new_rel_path": rel_path,
+                            "content_hash": current_hash,
+                            "size": size,
+                            "op_time": mtime,
+                            "machine_name": self.machine_name,
+                        }
+                        self.db.upsert_movement(temp_conn, novedad, log_fn=print)
+                        log_fn(f"MOVE TO: {rel_path}")
 
-                # =========================
-                # CREATE
-                # =========================
+                else:
+                    # LA ENTRADA YA EXISTE
+                    MTIME_TOLERANCE = 2  # segundos
+                    if (
+                        db_entry["size"] == size
+                        and abs(db_entry["mtime"] - mtime) <= MTIME_TOLERANCE
+                    ):
+                        pass
+                        # asumir que no cambió
+                    else:
+                        current_hash = sha256_file(rel_path)
+                        if db_entry["content_hash"] != current_hash:
+                            novedad = {
+                                "op_type": "MODIFY",
+                                "init_hash": db_entry["init_hash"],
+                                "rel_path": rel_path,
+                                "new_rel_path": None,
+                                "content_hash": current_hash,
+                                "size": size,
+                                "op_time": mtime,
+                                "machine_name": self.machine_name,
+                            }
+                            self.db.upsert_movement(temp_conn, novedad, log_fn=print)
+                            log_fn(f"MODIFY: {rel_path}")
+
+            # Archivos eliminados: existen en DB pero no en filesystem
+            deleted_paths = master_paths_index.keys() - directory_tree.keys()
+
+            for path in deleted_paths:
+                db_entry = master_paths_index.get(path)
+                novedad = {
+                    "op_type": "DELETE",
+                    "init_hash": db_entry["init_hash"],
+                    "rel_path": db_entry["rel_path"],
+                    "new_rel_path": None,
+                    "content_hash": db_entry["current_hash"],
+                    "size": db_entry["size"],
+                    "op_time": mtime,
+                    "machine_name": self.machine_name,
+                }
+                self.db.upsert_movement(temp_conn, novedad, log_fn=print)
+                log_fn(f"DELETE: {rel_path}")
+
+    # <======================================= FASE 3: APLICAR CAMBIOS Y SYNC =======================================>
+    def apply_movements(self):
+        # trabajo sobre una db temp (copia de db local)
+        with self.db.get_db_connection(self.db.db_temp_path) as temp_conn:
+            if self.db.table_is_empty(temp_conn, "movements"):
+                return
+            movements = self.db.read_movements(temp_conn)
+
+            master = self.db.read_states(temp_conn)
+            master_paths = {m["rel_path"] for m in master}
+            current = CurrentState(master_paths)
+
+            for mov in movements:
+                if not MovementRules.can_apply(mov, current._paths):
+                    continue  # Omito lo que sigue por conflicto en reglas
+
+                # APLICAR NOVEDAD FS
+                op = mov["op_type"]
+
                 if op == "CREATE":
-                    if temp_row:
-                        continue  # ya existe, no duplicar
+                    self.fs.copy_file(self.pc_root, self.usb_root, mov["rel_path"])
+                    # Validar .sha256_file en Destino, Si IGUALES -> VALIDADO
 
-                    src = self.pc_root / m["new_rel_path"]
-                    dst = self.usb_root / m["new_rel_path"]
+                elif op == "MODIFY":
+                    self.fs.copy_file(self.pc_root, self.usb_root, mov["rel_path"])
 
-                    copy_file(src, dst)
-                    h = sha256_file(dst)
-
-                    temp_conn.execute(
-                        "INSERT INTO files VALUES (?,?,?,?)",
-                        (init_hash, h, m["new_rel_path"], op_time),
+                elif op == "MOVE":
+                    self.fs.move_file(
+                        self.usb_root, mov["rel_path"], mov["new_rel_path"]
                     )
+                    # Validar .exist en new_rel, Si EXISTE -> VALIDADO
 
-                    log_fn(f"[USB CREATE] {init_hash}")
+                elif op == "DELETE":
+                    self.fs.delete_file(self.usb_root, mov["rel_path"])
+                    # Validar NO(.exist) en rel_path -> Si NO EXISTE -> VALIDADO
+
+                else:
+                    raise ValueError(f"Operación desconocida: {op}")
+                # if VALIDADO:
+                # APLICAR NOVEDADES DB
+                self.db.update_state(temp_conn, mov)
+                self.db.archive_and_delete_movement(temp_conn, mov)
+            # lista en memoria vacia significa que no hubo errores

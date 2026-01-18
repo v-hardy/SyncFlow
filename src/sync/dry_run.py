@@ -68,7 +68,7 @@ def dry_run(
             stats["modify_usb"] += 1
 
         elif op == "MOVE":
-            log_fn(f"[WOULD MOVE ON USB] {m['old_rel_path']} → {m['new_rel_path']}")
+            log_fn(f"[WOULD MOVE ON USB] {m['rel_path']} → {m['new_rel_path']}")
             stats["move_usb"] += 1
 
         elif op == "DELETE":

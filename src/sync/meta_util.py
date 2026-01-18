@@ -1,19 +1,14 @@
-import shutil
+import hashlib
 from pathlib import Path
 
 
-def ensure_parent(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-
-def copy_file(src: Path, dst: Path):
-    ensure_parent(dst)
-    shutil.copy2(src, dst)
-
-
-def move_file(src: Path, dst: Path):
-    ensure_parent(dst)
-    src.replace(dst)
+# <======================================= OBTENER HASH DEL ARCHIVO =======================================>
+def sha256_file(path: Path, chunk_size: int = 8192) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 # <======================================= GENERAR DICCIONARIO CON METADATOS =======================================>

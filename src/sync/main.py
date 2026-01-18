@@ -8,7 +8,6 @@ import logging
 
 from engine import EngineSync
 from dry_run import dry_run
-from fsutil import walk_directory_metadata
 
 
 # =========================
@@ -106,15 +105,13 @@ def main():
         # FASE 1
         # -------------------------
         logging.info("FASE 1: Sync desde USB → Local")
-        engine.sync_from_usb(log_fn=logging.info)
+        engine.replicateMaster(log_fn=logging.info)
 
         # -------------------------
         # FASE 2
         # -------------------------
-        # escaneo dir local y comparo con db local para obtener movimiwento
         logging.info("FASE 2: Obteniendo movimientos locales")
-        directory_tree = walk_directory_metadata(engine.pc_root)
-        engine.get_movements(directory_tree, log_fn=logging.info)
+        engine.get_movements(log_fn=logging.info)
 
         # -------------------------
         # FASE 3

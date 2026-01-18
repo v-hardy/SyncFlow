@@ -5,6 +5,17 @@
 
 Cuando conectás el USB, el algoritmo arranca: compara cada fila de la base maestra del pendrive con la local, usando la clave primaria. Si los metadatos son iguales, nada. Si el del USB es más nuevo, copia ese registro a la PC con su fecha. Si el de la PC es más nuevo... no hace nada, pero lo anota en un log: alerta, este lado anda adelantado. Ahí termina esa fase. Desconectás el pendrive, empezás a laburar: cualquier cosa que cambies —crear, editar, borrar— no va directo a la base local, sino que se registra en el delta, archivo de movimientos: clave tal, operación insert/update/delete, dato nuevo, hora de ahora. Después, cuando volvés a enchufar, abre todo: maestro, local y delta. Primero copia lo del maestro sobre la local si hace falta, como antes. Luego toma el delta y va fila por fila: si dice insert y no está en el maestro, lo mete; si update y sí está, lo sobreescribe; si delete y existe, lo saca de los dos lados. Al final, vacía el delta, copia el maestro limpio sobre la local y listo. Todo sin perder datos, resolviendo choques por metadatos.
 
+## Diseño:
+| Cosa          | Dónde va     |
+| ------------- | ------------ |
+| Schema        | `schema.sql`         |
+| Queries SQL   | `database.py`         |
+| Transacciones | `database.py`         |
+| Reglas        | `domain.py`  |
+| Orquestación  | `engine.py` |
+| FS            | `fsutil.py`      |
+
+
 ## Detalles de uso:
 | Escenario                           | Comando                                                                                                                       | Descripción                                                                                                     |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
