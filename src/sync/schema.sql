@@ -7,8 +7,9 @@ CREATE TABLE IF NOT EXISTS master_states (
     init_hash      TEXT PRIMARY KEY,
     rel_path       TEXT NOT NULL,
     content_hash   TEXT NOT NULL,
+    size_bytes     INTEGER NOT NULL,
     last_op_time   INTEGER NOT NULL,
-    last_machine   TEXT NOT NULL
+    machine_name   TEXT NOT NULL
 );
 
 -- ===============================
@@ -31,7 +32,8 @@ CREATE TABLE IF NOT EXISTS movements (
     rel_path        TEXT,
     new_rel_path    TEXT,
     content_hash    TEXT,
-    op_time         INTEGER NOT NULL,
+    size_bytes      INTEGER NOT NULL,
+    last_op_time    INTEGER NOT NULL,
     machine_name    TEXT NOT NULL,
     --
     CHECK (
@@ -40,10 +42,7 @@ CREATE TABLE IF NOT EXISTS movements (
         (op_type = 'MOVE'   AND rel_path IS NOT NULL AND new_rel_path IS NOT NULL) OR
         (op_type = 'DELETE' AND rel_path IS NOT NULL AND new_rel_path IS NULL)
     )
-);
-
-CREATE INDEX idx_mov_init_hash_time ON movements(init_hash, op_time);
-CREATE INDEX idx_mov_time ON movements(op_time);          
+);  
 
 -- ===============================
 -- Archivo histórico
@@ -55,7 +54,8 @@ CREATE TABLE IF NOT EXISTS movements_history (
     rel_path        TEXT,
     new_rel_path    TEXT,
     content_hash    TEXT,
-    op_time         INTEGER NOT NULL,
+    size_bytes      INTEGER NOT NULL,
+    last_op_time    INTEGER NOT NULL,
     machine_name    TEXT NOT NULL,
     applied_time    INTEGER
 );

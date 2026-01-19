@@ -18,13 +18,13 @@ class EngineSync:
 
     # <======================================= FASE 1: SINC DESDE USB =======================================>
     def replicateMaster(self, log_fn=print):
-        with self.db.get_db_connection(self.db.db_usb_path) as usb_conn:
+        with self.db.get_db_connection(self.db.usb_path) as usb_conn:
             if self.db.table_is_empty(usb_conn, "master_states"):
                 return
             primary_master = self.db.read_states(usb_conn)
             primary_tombstones = self.db.read_tombstones(usb_conn)
 
-        with self.db.get_db_connection(self.db.db_pc_path) as pc_conn:
+        with self.db.get_db_connection(self.db.pc_path) as pc_conn:
             if self.db.table_is_empty(pc_conn, "master_states"):
                 return
             secundary_master = self.db.read_states(pc_conn)
@@ -98,7 +98,7 @@ class EngineSync:
 
         directory_tree = walk_directory_metadata(self.pc_root)
 
-        with self.db.get_db_connection(self.db.db_pc_path) as pc_conn:
+        with self.db.get_db_connection(self.db.pc_path) as pc_conn:
             if self.db.table_is_empty(pc_conn, "master_states"):
                 return
             secundary_master = self.db.read_states(pc_conn)
@@ -106,7 +106,7 @@ class EngineSync:
         master_paths_index = {m["rel_path"]: m for m in secundary_master}
         master_hashs_index = {m["content_hash"]: m for m in secundary_master}
 
-        with self.db.get_db_connection(self.db.db_temp_path) as temp_conn:
+        with self.db.get_db_connection(self.db.temp_path) as temp_conn:
             for rel_path, (size, mtime, hash_or_none) in directory_tree.items():
                 print(f"Archivo: {rel_path}")
                 print(f"  Tamaño: {size} bytes")
@@ -127,12 +127,12 @@ class EngineSync:
                             "rel_path": rel_path,
                             "new_rel_path": None,
                             "content_hash": current_hash,
-                            "size": size,
-                            "op_time": mtime,
+                            "size_bytes": size,
+                            "last_op_time": mtime,
                             "machine_name": self.machine_name,
                         }
                         self.db.upsert_movement(temp_conn, novedad, log_fn=print)
-                        log_fn(f"CREATE: {rel_path}")
+                        log_fn(f"ADD MOV -> CREATE: {rel_path}")
                     else:
                         # Movido sin ser modificado
                         novedad = {
@@ -141,19 +141,19 @@ class EngineSync:
                             "rel_path": db_entry["rel_path"],
                             "new_rel_path": rel_path,
                             "content_hash": current_hash,
-                            "size": size,
-                            "op_time": mtime,
+                            "size_bytes": size,
+                            "last_op_time": mtime,
                             "machine_name": self.machine_name,
                         }
                         self.db.upsert_movement(temp_conn, novedad, log_fn=print)
-                        log_fn(f"MOVE TO: {rel_path}")
+                        log_fn(f"ADD MOV -> MOVE TO: {rel_path}")
 
                 else:
                     # LA ENTRADA YA EXISTE
                     MTIME_TOLERANCE = 2  # segundos
                     if (
-                        db_entry["size"] == size
-                        and abs(db_entry["mtime"] - mtime) <= MTIME_TOLERANCE
+                        db_entry["size_bytes"] == size
+                        and abs(db_entry["last_op_time"] - mtime) <= MTIME_TOLERANCE
                     ):
                         pass
                         # asumir que no cambió
@@ -166,12 +166,12 @@ class EngineSync:
                                 "rel_path": rel_path,
                                 "new_rel_path": None,
                                 "content_hash": current_hash,
-                                "size": size,
-                                "op_time": mtime,
+                                "size_bytes": size,
+                                "last_op_time": mtime,
                                 "machine_name": self.machine_name,
                             }
                             self.db.upsert_movement(temp_conn, novedad, log_fn=print)
-                            log_fn(f"MODIFY: {rel_path}")
+                            log_fn(f"ADD MOV -> MODIFY: {rel_path}")
 
             # Archivos eliminados: existen en DB pero no en filesystem
             deleted_paths = master_paths_index.keys() - directory_tree.keys()
@@ -184,17 +184,17 @@ class EngineSync:
                     "rel_path": db_entry["rel_path"],
                     "new_rel_path": None,
                     "content_hash": db_entry["current_hash"],
-                    "size": db_entry["size"],
-                    "op_time": mtime,
+                    "size_bytes": db_entry["size_bytes"],
+                    "last_op_time": mtime,
                     "machine_name": self.machine_name,
                 }
                 self.db.upsert_movement(temp_conn, novedad, log_fn=print)
-                log_fn(f"DELETE: {rel_path}")
+                log_fn(f"ADD MOV -> DELETE: {rel_path}")
 
     # <======================================= FASE 3: APLICAR CAMBIOS Y SYNC =======================================>
     def apply_movements(self):
         # trabajo sobre una db temp (copia de db local)
-        with self.db.get_db_connection(self.db.db_temp_path) as temp_conn:
+        with self.db.get_db_connection(self.db.temp_path) as temp_conn:
             if self.db.table_is_empty(temp_conn, "movements"):
                 return
             movements = self.db.read_movements(temp_conn)

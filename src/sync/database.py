@@ -12,20 +12,14 @@ import sqlite3
 from pathlib import Path
 import time
 
-""" 
-    def connect()
-    def insert_movement()
-    def get_pending_movements()
-"""
-
 
 class DB:
     def __init__(self, pc_root: Path, usb_root: Path, db_name: str):
         self.pc_root = pc_root.resolve()
         self.usb_root = usb_root.resolve()
-        self.db_pc_path = self.pc_root / ".sync" / db_name
-        self.db_temp_path = self.pc_root / ".sync" / f"{db_name}.tmp"
-        self.db_usb_path = self.usb_root / db_name
+        self.pc_path = self.pc_root / ".sync" / db_name
+        self.temp_path = self.pc_root / ".sync" / f"{db_name}.tmp"
+        self.usb_path = self.usb_root / db_name
 
         # Asegurar carpeta oculta en PC
         (self.pc_root / ".sync").mkdir(exist_ok=True)
@@ -71,23 +65,15 @@ class DB:
                 init_hash,
                 rel_path,
                 content_hash,
+                size_bytes,
                 last_op_time,
-                last_machine
+                machine_name
             FROM master_states
             ORDER BY rel_path ASC
             """
         )
 
-        master_states = []
-        for row in cursor.fetchall():
-            mov = {
-                "init_hash": row["init_hash"],
-                "rel_path": row["rel_path"],
-                "content_hash": row["content_hash"],
-                "last_op_time": row["last_op_time"],
-                "last_machine": row["last_machine"],
-            }
-            master_states.append(mov)
+        master_states = [dict(row) for row in cursor.fetchall()]
 
         return master_states
 
@@ -101,51 +87,32 @@ class DB:
                 rel_path,
                 new_rel_path,
                 content_hash,
-                op_time,
+                size_bytes,
+                last_op_time,
                 machine_name
             FROM movements
             ORDER BY rel_path ASC
             """
         )
 
-        movements = []
-        for row in cursor.fetchall():
-            mov = {
-                "id": row["id"],
-                "op_type": row["op_type"],
-                "init_hash": row["init_hash"],
-                "rel_path": row["rel_path"],
-                "new_rel_path": row["new_rel_path"],
-                "content_hash": row["content_hash"],
-                "op_time": row["op_time"],
-                "machine_name": row["machine_name"],
-            }
-            movements.append(mov)
+        movements = [dict(row) for row in cursor.fetchall()]
 
         return movements
 
     def read_tombstones(self, conn):
         cursor = conn.execute(
             """
-                SELECT
-                    init_hash,
-                    content_hash,
-                    deleted_at,
-                    machine_name
-                FROM tombstones
-                ORDER BY init_hash ASC
-                """
+            SELECT
+                init_hash,
+                content_hash,
+                deleted_at,
+                machine_name
+            FROM tombstones
+            ORDER BY init_hash ASC
+            """
         )
 
-        tombstones = []
-        for row in cursor.fetchall():
-            mov = {
-                "init_hash": row["init_hash"],
-                "content_hash": row["content_hash"],
-                "deleted_at": row["deleted_at"],
-                "machine_name": row["machine_name"],
-            }
-            tombstones.append(mov)
+        tombstones = [dict(row) for row in cursor.fetchall()]
 
         return tombstones
 
@@ -155,14 +122,45 @@ class DB:
 
         if op == "CREATE":
             conn.execute(
-                "INSERT INTO master_states (init_hash, rel_path, content_hash) VALUES (?, ?, ?)",
-                (mov["init_hash"], mov["rel_path"], mov["content_hash"]),
+                """
+                INSERT INTO master_states (
+                    init_hash,
+                    rel_path,
+                    content_hash,
+                    size_bytes,
+                    last_op_time,
+                    machine_name
+                ) 
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mov["init_hash"],
+                    mov["rel_path"],
+                    mov["content_hash"],
+                    mov["size_bytes"],
+                    mov["last_op_time"],
+                    mov["machine_name"],
+                ),
             )
 
         elif op == "MODIFY":
             conn.execute(
-                "UPDATE master_states SET content_hash = ? WHERE rel_path = ?",
-                (mov["content_hash"], mov["rel_path"]),
+                """
+                UPDATE master_states
+                SET
+                    content_hash   = ?,
+                    size_bytes     = ?,
+                    last_op_time   = ?,
+                    last_machine   = ?
+                WHERE rel_path = ?
+                """,
+                (
+                    mov["content_hash"],
+                    mov["size_bytes"],
+                    mov["last_op_time"],
+                    mov["machine_name"],
+                    mov["rel_path"],
+                ),
             )
 
         elif op == "MOVE":
@@ -172,23 +170,56 @@ class DB:
                 SET rel_path = ?
                 WHERE rel_path = ?
                 """,
-                (mov["new_rel_path"], mov["rel_path"]),
+                (
+                    mov["new_rel_path"],
+                    mov["rel_path"],
+                ),
             )
 
         elif op == "DELETE":
             conn.execute(
-                "DELETE FROM master_states WHERE rel_path = ?", (mov["rel_path"],)
+                """
+                DELETE FROM master_states 
+                WHERE rel_path = ?
+                """,
+                (mov["rel_path"],),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO tombstones (
+                    init_hash,
+                    content_hash,
+                    deleted_at,
+                    machine_name
+                ) 
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    mov["init_hash"],
+                    mov["content_hash"],
+                    mov["last_op_time"],
+                    mov["machine_name"],
+                ),
             )
 
     def upsert_movements(self, conn, mov: dict, log_fn=print):
         conn.execute(
             """
             INSERT OR REPLACE INTO movements (
-                id, op_type, init_hash, rel_path, new_rel_path,
-                content_hash, op_time, machine_name, applied_time
+                id, 
+                op_type, 
+                init_hash, 
+                rel_path, n
+                ew_rel_path,
+                content_hash, 
+                size_bytes,
+                last_op_time, 
+                machine_name, 
+                applied_time
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             (
                 mov["id"],
                 mov["op_type"],
@@ -196,7 +227,8 @@ class DB:
                 mov["rel_path"],
                 mov["new_rel_path"],
                 mov["content_hash"],
-                mov["op_time"],
+                mov["size_bytes"],
+                mov["last_op_time"],
                 mov["machine_name"],
                 int(time.time()),
             ),
@@ -208,11 +240,19 @@ class DB:
         conn.execute(
             """
             INSERT INTO movements_history (
-                id, op_type, init_hash, rel_path, new_rel_path,
-                content_hash, op_time, machine_name, applied_time
+                id, 
+                op_type, 
+                init_hash, 
+                rel_path, 
+                new_rel_path,
+                content_hash, 
+                size_bytes,
+                last_op_time, 
+                machine_name, 
+                applied_time
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             (
                 mov["id"],
                 mov["op_type"],
@@ -220,27 +260,10 @@ class DB:
                 mov["rel_path"],
                 mov["new_rel_path"],
                 mov["content_hash"],
-                mov["op_time"],
+                mov["size_bytes"],
+                mov["last_op_time"],
                 mov["machine_name"],
                 int(time.time()),
-            ),
-        )
-
-        conn.execute(
-            """
-            INSERT INTO tombstones (
-                init_hash,
-                content_hash,
-                deleted_at,
-                machine_name
-            )
-            VALUES (?, ?, ?, ?)
-        """,
-            (
-                mov["init_hash"],
-                mov["content_hash"],
-                mov["op_time"],
-                mov["machine_name"],
             ),
         )
 
@@ -248,9 +271,9 @@ class DB:
 
     # # <======================================= DESCARGAR CAMBIOS =======================================>
     # def sync_from_usb(self, log_fn=print):
-    #     loc_conn = self.get_db_connection(self.db_pc_path)
+    #     loc_conn = self.get_db_connection(self.pc_path)
     #     usb_conn = self.get_db_connection(
-    #         self.db_usb_path
+    #         self.usb_path
     #     )  # si no hay DB en usb, deberia omitir el resto de la funcion
 
     #     with loc_conn:
