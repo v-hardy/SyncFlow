@@ -4,7 +4,6 @@ CREATE / MODIFY / MOVE / DELETE lógicos
 Orden de aplicación (op_time)
 Evitar duplicados
 Idempotencia
-Resolución de conflictos (si luego la agregás)
 Saber qué hay que hacer, no cómo
 """
 
@@ -268,93 +267,3 @@ class DB:
         )
 
         conn.execute("DELETE FROM movements WHERE id = ?", (mov["id"],))
-
-    # # <======================================= DESCARGAR CAMBIOS =======================================>
-    # def sync_from_usb(self, log_fn=print):
-    #     loc_conn = self.get_db_connection(self.pc_path)
-    #     usb_conn = self.get_db_connection(
-    #         self.usb_path
-    #     )  # si no hay DB en usb, deberia omitir el resto de la funcion
-
-    #     with loc_conn:
-    #         loc_conn.execute("BEGIN IMMEDIATE")
-
-    #         usb_rows = usb_conn.execute(
-    #             "SELECT init_hash, content_hash, rel_path, timestamp FROM files"
-    #         )
-
-    #         for u in usb_rows:
-    #             init_hash = u["init_hash"]
-    #             usb_path = self.usb_root / u["rel_path"]
-
-    #             local_row = loc_conn.execute(
-    #                 "SELECT content_hash, rel_path FROM files WHERE init_hash=?",
-    #                 (init_hash,),
-    #             ).fetchone()
-
-    #             # =========================
-    #             # CASO: solo en USB
-    #             # =========================
-    #             if local_row is None:
-    #                 dst = self.pc_root / u["rel_path"]
-    #                 copy_file(usb_path, dst)
-
-    #                 new_hash = sha256_file(dst)
-    #                 if new_hash != u["content_hash"]:
-    #                     raise RuntimeError(f"Hash mismatch (NEW_FROM_USB): {init_hash}")
-
-    #                 loc_conn.execute(
-    #                     """INSERT INTO files VALUES (?,?,?,?)""",
-    #                     (init_hash, new_hash, u["rel_path"], u["timestamp"]),
-    #                 )
-
-    #                 log_fn(f"[NEW_FROM_USB] {init_hash}")
-    #                 continue
-
-    #             # =========================
-    #             # CASO: existe en ambos
-    #             # =========================
-    #             same_hash = u["content_hash"] == local_row["content_hash"]
-    #             same_path = u["rel_path"] == local_row["rel_path"]
-
-    #             src = usb_path
-    #             dst = self.pc_root / u["rel_path"]
-
-    #             if same_hash and same_path:
-    #                 continue
-
-    #             if same_hash and not same_path:
-    #                 old = self.pc_root / local_row["rel_path"]
-    #                 move_file(old, dst)
-
-    #                 loc_conn.execute(
-    #                     "UPDATE files SET rel_path=? WHERE init_hash=?",
-    #                     (u["rel_path"], init_hash),
-    #                 )
-
-    #                 log_fn(f"[MOVE_LOCAL] {init_hash}")
-    #                 continue
-
-    #             # contenido distinto → UPDATE
-    #             copy_file(src, dst)
-    #             new_hash = sha256_file(dst)
-
-    #             if new_hash != u["content_hash"]:
-    #                 raise RuntimeError(f"Hash mismatch (UPDATE): {init_hash}")
-
-    #             if not same_path:
-    #                 old = self.pc_root / local_row["rel_path"]
-    #                 if old.exists():
-    #                     old.unlink()
-
-    #             loc_conn.execute(
-    #                 """UPDATE files
-    #                 SET content_hash=?, rel_path=?, timestamp=?
-    #                 WHERE init_hash=?""",
-    #                 (new_hash, u["rel_path"], u["timestamp"], init_hash),
-    #             )
-
-    #             log_fn(f"[UPDATE_LOCAL] {init_hash}")
-
-    #     usb_conn.close()
-    #     loc_conn.close()

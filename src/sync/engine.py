@@ -1,4 +1,5 @@
 import socket
+import time
 from pathlib import Path
 
 from database import DB
@@ -14,7 +15,7 @@ class EngineSync:
         self.pc_root = pc_root.resolve()
         self.usb_root = usb_root.resolve()
         self.db = DB(self.pc_root, self.usb_root, db_name)
-        self.fs = FSOps  # (self.pc_root, self.usb_root)
+        self.fs = FSOps  # Clase, no instancia
 
     # <======================================= FASE 1: SINC DESDE USB =======================================>
     def replicateMaster(self, log_fn=print):
@@ -44,15 +45,19 @@ class EngineSync:
                     pc = pc_index.get(h)
                     usb = usb_index.get(h)
 
+                    src = self.usb_root / usb["rel_path"]
+                    dst = self.pc_root / src.relative_to(self.usb_root)
+
                     # 1 Está en USB y NO en PC → copiar a PC
                     if usb and not pc:
-                        self.fs.copy_file(self.pc_root, self.usb_root, usb["rel_path"])
+                        self.fs.copy_file(src, dst)
                         continue
 
                     # 2 Está en PC y NO en USB → borrar en PC
                     if pc and not usb:
                         if tombstones_index.get(h):
-                            self.fs.delete_file(self.pc_root, pc["rel_path"])
+                            dst = self.pc_root / pc["rel_path"]
+                            self.fs.delete_file(dst)
                         continue
 
                     # 3 Está en ambos → comparar
@@ -62,9 +67,8 @@ class EngineSync:
                             usb["rel_path"] != pc["rel_path"]
                             and usb["mtime"] == pc["mtime"]
                         ):
-                            self.fs.move_file(
-                                self.pc_root, pc["rel_path"], usb["rel_path"]
-                            )
+                            src = self.pc_root / pc["rel_path"]
+                            self.fs.move_file(src, dst)
                             continue
 
                         # 3.2 USB más reciente → copiar
@@ -72,15 +76,16 @@ class EngineSync:
                             usb["mtime"] > pc["mtime"]
                             and usb["content_hash"] != pc["content_hash"]
                         ):
-                            self.fs.copy_file(
-                                self.pc_root, self.usb_root, usb["rel_path"]
-                            )
+                            self.fs.copy_file(src, dst)
                             continue
 
                         # 3.3 Iguales o es un NUEVO archivo solo en pc → no hacer nada
 
             else:
-                self.fs.copy_file(self.pc_root, self.usb_root, usb["rel_path"])
+                for usb_file in primary_master:
+                    src = self.usb_root / usb_file["rel_path"]
+                    dst = self.pc_root / src.relative_to(self.usb_root)
+                    self.fs.copy_file(src, dst)
         else:
             pass
             # SALTO A FASE 2
@@ -92,9 +97,6 @@ class EngineSync:
         Compara el estado actual del filesystem con el estado guardado en la DB
         y registra los movimientos (CREATE / MODIFY / MOVE / DELETE).
         """
-        # dict{ CLAVE: rel_path , VALOR: tupla( size, mtime, hash_or_none ) }
-        # Contar con los datos de la DB abierta
-        # Comparo CLAVES, SI los metadatos cambian -> registrar en TABLA MOVEMENTS
 
         directory_tree = walk_directory_metadata(self.pc_root)
 
@@ -118,7 +120,7 @@ class EngineSync:
                 db_entry = master_paths_index.get(rel_path)
                 if db_entry is None:
                     # NUEVA ENTRADA
-                    current_hash = sha256_file(rel_path)
+                    current_hash = sha256_file(self.pc_root / rel_path)
                     db_entry = master_hashs_index.get(current_hash)
                     if db_entry is None:
                         novedad = {
@@ -158,7 +160,7 @@ class EngineSync:
                         pass
                         # asumir que no cambió
                     else:
-                        current_hash = sha256_file(rel_path)
+                        current_hash = sha256_file(self.pc_root / rel_path)
                         if db_entry["content_hash"] != current_hash:
                             novedad = {
                                 "op_type": "MODIFY",
@@ -183,13 +185,13 @@ class EngineSync:
                     "init_hash": db_entry["init_hash"],
                     "rel_path": db_entry["rel_path"],
                     "new_rel_path": None,
-                    "content_hash": db_entry["current_hash"],
+                    "content_hash": db_entry["content_hash"],
                     "size_bytes": db_entry["size_bytes"],
-                    "last_op_time": mtime,
+                    "last_op_time": time.time(),
                     "machine_name": self.machine_name,
                 }
                 self.db.upsert_movement(temp_conn, novedad, log_fn=print)
-                log_fn(f"ADD MOV -> DELETE: {rel_path}")
+                log_fn(f"ADD MOV -> DELETE: {path}")
 
     # <======================================= FASE 3: APLICAR CAMBIOS Y SYNC =======================================>
     def apply_movements(self):
@@ -207,24 +209,26 @@ class EngineSync:
                 if not MovementRules.can_apply(mov, current._paths):
                     continue  # Omito lo que sigue por conflicto en reglas
 
+                src = self.pc_root / mov["rel_path"]
+                dst = self.usb_root / src.relative_to(self.pc_root)
+
                 # APLICAR NOVEDAD FS
                 op = mov["op_type"]
 
                 if op == "CREATE":
-                    self.fs.copy_file(self.pc_root, self.usb_root, mov["rel_path"])
+                    self.fs.copy_file(src, dst)
                     # Validar .sha256_file en Destino, Si IGUALES -> VALIDADO
 
                 elif op == "MODIFY":
-                    self.fs.copy_file(self.pc_root, self.usb_root, mov["rel_path"])
+                    self.fs.copy_file(src, dst)
 
                 elif op == "MOVE":
-                    self.fs.move_file(
-                        self.usb_root, mov["rel_path"], mov["new_rel_path"]
-                    )
+                    dst = self.usb_root / mov["new_rel_path"]
+                    self.fs.move_file(src, dst)
                     # Validar .exist en new_rel, Si EXISTE -> VALIDADO
 
                 elif op == "DELETE":
-                    self.fs.delete_file(self.usb_root, mov["rel_path"])
+                    self.fs.delete_file(dst)
                     # Validar NO(.exist) en rel_path -> Si NO EXISTE -> VALIDADO
 
                 else:

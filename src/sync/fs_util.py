@@ -25,16 +25,12 @@ class FSOps:
             f.write(content)
 
     @staticmethod
-    def copy_file(src_root: Path, dst_root: Path, rel_path: str):
-        src = src_root / rel_path
-        dst = dst_root / rel_path
+    def copy_file(src: Path, dst: Path):
         FSOps.ensure_parent(dst)
         shutil.copy2(src, dst)
 
     @staticmethod
-    def move_file(root: Path, src_rel_path: str, dst_rel_path: str):
-        src = root / src_rel_path
-        dst = root / dst_rel_path
+    def move_file(src: Path, dst: Path):
         FSOps.ensure_parent(dst)
         src.rename(dst)
 
@@ -45,7 +41,6 @@ class FSOps:
             f.write(content)
 
     @staticmethod
-    def delete_file(root: Path, rel_path: str):
-        path = root / rel_path
+    def delete_file(path: Path):
         if path.exists():
             path.unlink()
