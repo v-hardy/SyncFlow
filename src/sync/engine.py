@@ -2,6 +2,7 @@ import socket
 import time
 from pathlib import Path
 
+import logging
 from database import DB
 from domain import MovementRules, CurrentState
 from fs_util import FSOps
@@ -15,10 +16,19 @@ class EngineSync:
         self.pc_root = pc_root.resolve()
         self.usb_root = usb_root.resolve()
         self.db = DB(self.pc_root, self.usb_root, db_name)
-        self.fs = FSOps  # Clase, no instancia
+        self.logger = logging.getLogger(__name__)
+
+        self.logger.info(
+            "EngineSync iniciado | machine=%s | pc_root=%s | usb_root=%s",
+            self.machine_name,
+            self.pc_root,
+            self.usb_root,
+        )
 
     # <======================================= FASE 1: SINC DESDE USB =======================================>
     def replicateMaster(self, log_fn=print):
+        self.logger.info("FASE 1: replicando estado desde USB")
+
         with self.db.get_db_connection(self.db.usb_path) as usb_conn:
             if self.db.table_is_empty(usb_conn, "master_states"):
                 return
@@ -42,6 +52,8 @@ class EngineSync:
                 all_hashes = pc_hashes | usb_hashes  # (- .db)'s ?
 
                 for h in all_hashes:
+                    self.logger.debug("Evaluando hash=%s", h)
+
                     pc = pc_index.get(h)
                     usb = usb_index.get(h)
 
@@ -50,14 +62,18 @@ class EngineSync:
 
                     # 1 Está en USB y NO en PC → copiar a PC
                     if usb and not pc:
-                        self.fs.copy_file(src, dst)
+                        self.logger.info("COPY USB → PC | %s", usb["rel_path"])
+                        FSOps.copy_file(src, dst)
                         continue
 
                     # 2 Está en PC y NO en USB → borrar en PC
                     if pc and not usb:
                         if tombstones_index.get(h):
+                            self.logger.info(
+                                "DELETE en PC (tombstone) | %s", pc["rel_path"]
+                            )
                             dst = self.pc_root / pc["rel_path"]
-                            self.fs.delete_file(dst)
+                            FSOps.delete_file(dst)
                         continue
 
                     # 3 Está en ambos → comparar
@@ -67,8 +83,13 @@ class EngineSync:
                             usb["rel_path"] != pc["rel_path"]
                             and usb["mtime"] == pc["mtime"]
                         ):
+                            self.logger.info(
+                                "MOVE detectado | %s → %s",
+                                pc["rel_path"],
+                                usb["rel_path"],
+                            )
                             src = self.pc_root / pc["rel_path"]
-                            self.fs.move_file(src, dst)
+                            FSOps.move_file(src, dst)
                             continue
 
                         # 3.2 USB más reciente → copiar
@@ -76,20 +97,20 @@ class EngineSync:
                             usb["mtime"] > pc["mtime"]
                             and usb["content_hash"] != pc["content_hash"]
                         ):
-                            self.fs.copy_file(src, dst)
+                            self.logger.info("UPDATE desde USB | %s", usb["rel_path"])
+                            FSOps.copy_file(src, dst)
                             continue
 
                         # 3.3 Iguales o es un NUEVO archivo solo en pc → no hacer nada
 
             else:
+                self.logger.warning("PC sin master_states, posible primera ejecución")
                 for usb_file in primary_master:
                     src = self.usb_root / usb_file["rel_path"]
                     dst = self.pc_root / src.relative_to(self.usb_root)
-                    self.fs.copy_file(src, dst)
+                    FSOps.copy_file(src, dst)
         else:
-            pass
-            # SALTO A FASE 2
-            # o verifico si es un error que no haya primario y si uno secundario?
+            self.logger.info("USB sin master_states, salto replicación")
 
     # <======================================= FASE 2: OBTENER DATOS DE CAMBIOS =======================================>
     def get_movements(self, log_fn: print):
@@ -216,19 +237,25 @@ class EngineSync:
                 op = mov["op_type"]
 
                 if op == "CREATE":
-                    self.fs.copy_file(src, dst)
+                    # FSOps.copy_file(src, dst)
                     # Validar .sha256_file en Destino, Si IGUALES -> VALIDADO
+                    try:
+                        FSOps.copy_file(src, dst)
+                    except FileNotFoundError:
+                        self.logger.warning(f"No se pudo copiar (no existe): {src}")
+                    except Exception as e:
+                        self.logger.error(f"Error copiando {src}: {e}")
 
                 elif op == "MODIFY":
-                    self.fs.copy_file(src, dst)
+                    FSOps.copy_file(src, dst)
 
                 elif op == "MOVE":
                     dst = self.usb_root / mov["new_rel_path"]
-                    self.fs.move_file(src, dst)
+                    FSOps.move_file(src, dst)
                     # Validar .exist en new_rel, Si EXISTE -> VALIDADO
 
                 elif op == "DELETE":
-                    self.fs.delete_file(dst)
+                    FSOps.delete_file(dst)
                     # Validar NO(.exist) en rel_path -> Si NO EXISTE -> VALIDADO
 
                 else:

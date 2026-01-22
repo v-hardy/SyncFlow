@@ -10,6 +10,8 @@ Saber qué hay que hacer, no cómo
 import sqlite3
 from pathlib import Path
 import time
+import logging
+from fs_util import FSOps
 
 
 class DB:
@@ -19,14 +21,18 @@ class DB:
         self.pc_path = self.pc_root / ".sync" / db_name
         self.temp_path = self.pc_root / ".sync" / f"{db_name}.tmp"
         self.usb_path = self.usb_root / db_name
+        self.logger = logging.getLogger(__name__)
 
         # Asegurar carpeta oculta en PC
         (self.pc_root / ".sync").mkdir(exist_ok=True)
 
+        self.logger.info(
+            "DB inicializada | pc_path=%s | usb_path=%s", self.pc_path, self.usb_path
+        )
+
     # <======================================= INICIALIZA DB =======================================>
     def create_schema(self, conn):
         # Definimos la ruta al archivo .sql
-        # (Asumiendo que está en la misma carpeta que tu script)
         sql_file_path = Path(__file__).parent / "schema.sql"
 
         try:
@@ -38,10 +44,14 @@ class DB:
             conn.executescript(sql_script)
             conn.commit()
 
+            self.logger.info("Esquema SQL verificado/aplicado")
+
         except FileNotFoundError:
-            print(f"Error: No se encontró el archivo {sql_file_path}")
-        except sqlite3.Error as e:
-            print(f"Error de SQLite al crear el esquema: {e}")
+            self.logger.error("Schema no encontrado: %s", sql_file_path)
+            raise
+        except sqlite3.Error:
+            self.logger.exception("Error SQLite al crear esquema")
+            raise
 
     # <======================================= VERIFICA TABLA VACIA =======================================>
     def table_is_empty(self, conn, table):
@@ -50,10 +60,12 @@ class DB:
 
     # <======================================= ESTABLECE CONEXION =======================================>
     def get_db_connection(self, db_path: Path):
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.logger.debug("Conectando a DB: %s", db_path)
+        FSOps.ensure_parent(db_path)
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row  # se devuelven como objetos tipo sqlite3.Row, que funcionan como un diccionario + tupla híbrido. Se accede a las columnas tanto por índice como por nombre, más legible y seguro
         self.create_schema(conn)  # Creo tabla de registros SQL solo si no existe aun
+        self.logger.info("Conexión establecida: %s", db_path)
         return conn  # Retorno objeto conexion
 
     # <======================================= LEE =======================================>
@@ -71,8 +83,9 @@ class DB:
             ORDER BY rel_path ASC
             """
         )
-
-        master_states = [dict(row) for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        self.logger.debug("read_states → %d registros", len(rows))
+        master_states = [dict(row) for row in rows]
 
         return master_states
 
@@ -94,7 +107,9 @@ class DB:
             """
         )
 
-        movements = [dict(row) for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        self.logger.debug("read_movements → %d registros", len(rows))
+        movements = [dict(row) for row in rows]
 
         return movements
 
@@ -111,13 +126,22 @@ class DB:
             """
         )
 
-        tombstones = [dict(row) for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        self.logger.debug("read_tombstones → %d registros", len(rows))
+        tombstones = [dict(row) for row in rows]
 
         return tombstones
 
     # <======================================= ACTUALIZA =======================================>
     def update_state(self, conn, mov: dict):
         op = mov["op_type"]
+
+        self.logger.info(
+            "Aplicando %s | path=%s | init_hash=%s",
+            op,
+            mov.get("rel_path"),
+            mov.get("init_hash"),
+        )
 
         if op == "CREATE":
             conn.execute(
@@ -174,6 +198,7 @@ class DB:
                     mov["rel_path"],
                 ),
             )
+            self.logger.debug("MOVE %s → %s", mov["rel_path"], mov["new_rel_path"])
 
         elif op == "DELETE":
             conn.execute(
@@ -201,6 +226,9 @@ class DB:
                     mov["machine_name"],
                 ),
             )
+
+        else:
+            self.logger.warning("Operación desconocida: %s", op)
 
     def upsert_movements(self, conn, mov: dict, log_fn=print):
         conn.execute(
@@ -232,10 +260,18 @@ class DB:
                 int(time.time()),
             ),
         )
-        log_fn(f"[UPDATE_MOVEMENTS] {mov['init_hash']}")
+
+        self.logger.debug(
+            "Movement UPSERT | id=%s | op=%s | init_hash=%s",
+            mov["id"],
+            mov["op_type"],
+            mov["init_hash"],
+        )
 
     # <======================================= ARCHIVA =======================================>
     def archive_and_delete_movement(self, conn, mov: dict):
+        self.logger.info("Archivando movement id=%s | op=%s", mov["id"], mov["op_type"])
+
         conn.execute(
             """
             INSERT INTO movements_history (
@@ -267,3 +303,5 @@ class DB:
         )
 
         conn.execute("DELETE FROM movements WHERE id = ?", (mov["id"],))
+
+        self.logger.debug("Movement eliminado de tabla activa: %s", mov["id"])

@@ -14,13 +14,17 @@ from dry_run import dry_run
 # Logging
 # =========================
 def setup_logging(log_file: Path):
+    # Asegurar que exista la carpeta del log
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
             logging.FileHandler(log_file, encoding="utf-8"),
             logging.StreamHandler(sys.stdout),
         ],
+        force=True,  # evita configuraciones previas silenciosas
     )
 
 
