@@ -1,3 +1,7 @@
+[project]
+name = "sync"
+version = "0.1.0"
+
 [tool.ruff]
 # Ajustes generales (compartidos por linter y formateador)
 line-length = 88

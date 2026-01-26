@@ -230,7 +230,7 @@ class DB:
         else:
             self.logger.warning("Operación desconocida: %s", op)
 
-    def upsert_movements(self, conn, mov: dict, log_fn=print):
+    def upsert_movements(self, conn, mov: dict):
         conn.execute(
             """
             INSERT OR REPLACE INTO movements (

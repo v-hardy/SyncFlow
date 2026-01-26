@@ -1,4 +1,5 @@
 .venv/
-ejemplo_full-read/
 __pycache__/
+ejemplo_full-read/
 *.pyc
+*.egg-info/

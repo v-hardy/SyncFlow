@@ -34,7 +34,7 @@ args, extra = parser.parse_known_args()
 # ====================================
 python_cmd = sys.executable  # usa el mismo intérprete que este script
 
-main_py_path = Path(__file__).parent / "src" / "sync" / "main.py"
+main_py_path = Path(__file__).parent / "sync" / "main.py"
 if not main_py_path.exists():
     print(f"Error: no se encontró {main_py_path}")
     sys.exit(1)

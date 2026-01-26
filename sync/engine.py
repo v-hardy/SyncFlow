@@ -24,19 +24,26 @@ class EngineSync:
             self.pc_root,
             self.usb_root,
         )
+        self.logger.debug(
+            "Paths resueltos | pc_root=%s | usb_root=%s",
+            self.pc_root,
+            self.usb_root,
+        )
 
     # <======================================= FASE 1: SINC DESDE USB =======================================>
-    def replicateMaster(self, log_fn=print):
+    def replicate_master(self):
         self.logger.info("FASE 1: replicando estado desde USB")
 
         with self.db.get_db_connection(self.db.usb_path) as usb_conn:
             if self.db.table_is_empty(usb_conn, "master_states"):
+                self.logger.info("FASE 1 | USB con master_states vacio")
                 return
             primary_master = self.db.read_states(usb_conn)
             primary_tombstones = self.db.read_tombstones(usb_conn)
 
         with self.db.get_db_connection(self.db.pc_path) as pc_conn:
             if self.db.table_is_empty(pc_conn, "master_states"):
+                self.logger.warning("FASE 1 | PC con master_states vacio")
                 return
             secundary_master = self.db.read_states(pc_conn)
 
@@ -52,10 +59,15 @@ class EngineSync:
                 all_hashes = pc_hashes | usb_hashes  # (- .db)'s ?
 
                 for h in all_hashes:
-                    self.logger.debug("Evaluando hash=%s", h)
-
                     pc = pc_index.get(h)
                     usb = usb_index.get(h)
+
+                    self.logger.debug(
+                        "Evaluando archivo | hash=%s | pc=%s | usb=%s",
+                        h,
+                        bool(pc),
+                        bool(usb),
+                    )
 
                     src = self.usb_root / usb["rel_path"]
                     dst = self.pc_root / src.relative_to(self.usb_root)
@@ -113,29 +125,34 @@ class EngineSync:
             self.logger.info("USB sin master_states, salto replicación")
 
     # <======================================= FASE 2: OBTENER DATOS DE CAMBIOS =======================================>
-    def get_movements(self, log_fn: print):
+    def get_movements(self):
         """
         Compara el estado actual del filesystem con el estado guardado en la DB
         y registra los movimientos (CREATE / MODIFY / MOVE / DELETE).
         """
+        self.logger.info("FASE 2 | Escaneando filesystem para detectar cambios")
 
         directory_tree = walk_directory_metadata(self.pc_root)
 
         with self.db.get_db_connection(self.db.pc_path) as pc_conn:
             if self.db.table_is_empty(pc_conn, "master_states"):
+                self.logger.warning(
+                    "FASE 2 | No hay master_states, no se pueden detectar movimientos"
+                )
                 return
             secundary_master = self.db.read_states(pc_conn)
-
-        master_paths_index = {m["rel_path"]: m for m in secundary_master}
-        master_hashs_index = {m["content_hash"]: m for m in secundary_master}
+            master_paths_index = {m["rel_path"]: m for m in secundary_master}
+            master_hashs_index = {m["content_hash"]: m for m in secundary_master}
 
         with self.db.get_db_connection(self.db.temp_path) as temp_conn:
             for rel_path, (size, mtime, hash_or_none) in directory_tree.items():
-                print(f"Archivo: {rel_path}")
-                print(f"  Tamaño: {size} bytes")
-                print(f"  Modificado: {mtime}")
-                print(f"  Hash: {hash_or_none}")
-                print("-" * 20)
+                self.logger.debug(
+                    "FS ENTRY | path=%s size=%s mtime=%s hash=%s",
+                    rel_path,
+                    size,
+                    mtime,
+                    hash_or_none,
+                )
 
                 # Trato todo el contenido FS
                 db_entry = master_paths_index.get(rel_path)
@@ -144,6 +161,10 @@ class EngineSync:
                     current_hash = sha256_file(self.pc_root / rel_path)
                     db_entry = master_hashs_index.get(current_hash)
                     if db_entry is None:
+                        self.logger.info(
+                            "FASE 2 | CREATE detectado | %s",
+                            rel_path,
+                        )
                         novedad = {
                             "op_type": "CREATE",
                             "init_hash": current_hash,
@@ -154,10 +175,14 @@ class EngineSync:
                             "last_op_time": mtime,
                             "machine_name": self.machine_name,
                         }
-                        self.db.upsert_movement(temp_conn, novedad, log_fn=print)
-                        log_fn(f"ADD MOV -> CREATE: {rel_path}")
+                        self.db.upsert_movement(temp_conn, novedad)
                     else:
                         # Movido sin ser modificado
+                        self.logger.info(
+                            "FASE 2 | MOVE detectado | %s → %s",
+                            db_entry["rel_path"],
+                            rel_path,
+                        )
                         novedad = {
                             "op_type": "MOVE",
                             "init_hash": db_entry["init_hash"],
@@ -168,8 +193,7 @@ class EngineSync:
                             "last_op_time": mtime,
                             "machine_name": self.machine_name,
                         }
-                        self.db.upsert_movement(temp_conn, novedad, log_fn=print)
-                        log_fn(f"ADD MOV -> MOVE TO: {rel_path}")
+                        self.db.upsert_movement(temp_conn, novedad)
 
                 else:
                     # LA ENTRADA YA EXISTE
@@ -183,6 +207,10 @@ class EngineSync:
                     else:
                         current_hash = sha256_file(self.pc_root / rel_path)
                         if db_entry["content_hash"] != current_hash:
+                            self.logger.info(
+                                "FASE 2 | MODIFY detectado | %s",
+                                rel_path,
+                            )
                             novedad = {
                                 "op_type": "MODIFY",
                                 "init_hash": db_entry["init_hash"],
@@ -193,14 +221,17 @@ class EngineSync:
                                 "last_op_time": mtime,
                                 "machine_name": self.machine_name,
                             }
-                            self.db.upsert_movement(temp_conn, novedad, log_fn=print)
-                            log_fn(f"ADD MOV -> MODIFY: {rel_path}")
+                            self.db.upsert_movement(temp_conn, novedad)
 
             # Archivos eliminados: existen en DB pero no en filesystem
             deleted_paths = master_paths_index.keys() - directory_tree.keys()
 
             for path in deleted_paths:
                 db_entry = master_paths_index.get(path)
+                self.logger.info(
+                    "FASE 2 | DELETE detectado | %s",
+                    path,
+                )
                 novedad = {
                     "op_type": "DELETE",
                     "init_hash": db_entry["init_hash"],
@@ -211,14 +242,16 @@ class EngineSync:
                     "last_op_time": time.time(),
                     "machine_name": self.machine_name,
                 }
-                self.db.upsert_movement(temp_conn, novedad, log_fn=print)
-                log_fn(f"ADD MOV -> DELETE: {path}")
+                self.db.upsert_movement(temp_conn, novedad)
 
     # <======================================= FASE 3: APLICAR CAMBIOS Y SYNC =======================================>
     def apply_movements(self):
+        self.logger.info("FASE 3 | Aplicando movimientos y sincronizando USB")
+
         # trabajo sobre una db temp (copia de db local)
         with self.db.get_db_connection(self.db.temp_path) as temp_conn:
             if self.db.table_is_empty(temp_conn, "movements"):
+                self.logger.info("FASE 3 | No hay movimientos pendientes")
                 return
             movements = self.db.read_movements(temp_conn)
 
@@ -228,6 +261,11 @@ class EngineSync:
 
             for mov in movements:
                 if not MovementRules.can_apply(mov, current._paths):
+                    self.logger.warning(
+                        "FASE 3 | Movimiento omitido por reglas | op=%s path=%s",
+                        mov["op_type"],
+                        mov["rel_path"],
+                    )
                     continue  # Omito lo que sigue por conflicto en reglas
 
                 src = self.pc_root / mov["rel_path"]
@@ -237,7 +275,6 @@ class EngineSync:
                 op = mov["op_type"]
 
                 if op == "CREATE":
-                    # FSOps.copy_file(src, dst)
                     # Validar .sha256_file en Destino, Si IGUALES -> VALIDADO
                     try:
                         FSOps.copy_file(src, dst)
@@ -247,7 +284,12 @@ class EngineSync:
                         self.logger.error(f"Error copiando {src}: {e}")
 
                 elif op == "MODIFY":
-                    FSOps.copy_file(src, dst)
+                    try:
+                        FSOps.copy_file(src, dst)
+                    except FileNotFoundError:
+                        self.logger.warning(f"No se pudo copiar (no existe): {src}")
+                    except Exception as e:
+                        self.logger.error(f"Error copiando {src}: {e}")
 
                 elif op == "MOVE":
                     dst = self.usb_root / mov["new_rel_path"]
@@ -264,4 +306,10 @@ class EngineSync:
                 # APLICAR NOVEDADES DB
                 self.db.update_state(temp_conn, mov)
                 self.db.archive_and_delete_movement(temp_conn, mov)
+                self.logger.info(
+                    "FASE 3 | Movimiento aplicado correctamente | op=%s path=%s",
+                    op,
+                    mov["rel_path"],
+                )
+
             # lista en memoria vacia significa que no hubo errores

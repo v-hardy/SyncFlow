@@ -39,6 +39,11 @@ class FSOps:
     @staticmethod
     def modify_file(path: Path, content: bytes):
         logger.debug("MODIFY_FILE | %s (%d bytes)", path, len(content))
+
+        if not path.exists():
+            # Lanzamos explícitamente para que el test pase
+            raise FileNotFoundError(f"File {path} does not exist")
+
         try:
             with open(path, "wb") as f:
                 f.write(content)

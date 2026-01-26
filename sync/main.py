@@ -9,6 +9,8 @@ import logging
 from engine import EngineSync
 from dry_run import dry_run
 
+logger = logging.getLogger(__name__)
+
 
 # =========================
 # Logging
@@ -32,10 +34,14 @@ def setup_logging(log_file: Path):
 # Sanity checks
 # =========================
 def check_environment(pc_root, usb_root):
+    logger.debug("Chequeando entorno: pc_root=%s, usb_root=%s", pc_root, usb_root)
+
     if not pc_root.exists():
+        logger.error("PC root no existe: %s", pc_root)
         raise RuntimeError(f"PC root no existe: {pc_root}")
 
     if not usb_root.exists():
+        logger.error("USB root no existe: %s", usb_root)
         raise RuntimeError(f"USB root no existe: {usb_root}")
 
 
@@ -81,7 +87,7 @@ def main():
 
     setup_logging(args.log)
 
-    logging.info("===== INICIO SYNC =====")
+    logger.info("===== INICIO SYNC =====")
 
     try:
         check_environment(
@@ -100,30 +106,30 @@ def main():
         # DRY-RUN
         # ==================================================
         if args.dry_run:
-            logging.info("Ejecutando DRY-RUN")
-            dry_run(log_fn=logging.info)
-            logging.info("DRY-RUN finalizado. No se aplicaron cambios.")
+            logger.info("Ejecutando DRY-RUN")
+            dry_run()
+            logger.info("DRY-RUN finalizado. No se aplicaron cambios.")
             return
 
         # -------------------------
         # FASE 1
         # -------------------------
-        logging.info("FASE 1: Sync desde USB → Local")
-        engine.replicateMaster(log_fn=logging.info)
+        logger.info("FASE 1: Sync desde USB → Local")
+        engine.replicate_master()
 
         # -------------------------
         # FASE 2
         # -------------------------
-        logging.info("FASE 2: Obteniendo movimientos locales")
-        engine.get_movements(log_fn=logging.info)
+        logger.info("FASE 2: Obteniendo movimientos locales")
+        engine.get_movements()
 
         # -------------------------
         # FASE 3
         # -------------------------
-        logging.info("FASE 3: Aplicando movimientos locales → USB")
-        engine.apply_movements(log_fn=logging.info)
+        logger.info("FASE 3: Aplicando movimientos locales → USB")
+        engine.apply_movements()
 
-        logging.info("===== SYNC FINALIZADA OK =====")
+        logger.info("===== SYNC FINALIZADA OK =====")
 
     except Exception as e:
         logging.error("SYNC FALLIDA")
