@@ -1,16 +1,19 @@
 import socket
 import time
+import logging
 from pathlib import Path
 
-import logging
-from database import DB
-from domain import MovementRules, CurrentState
-from fs_util import FSOps
-from meta_util import walk_directory_metadata, sha256_file
+from sync.database import DB
+from sync.domain import MovementRules, CurrentState
+from sync.fs_util import FSOps
+from sync.meta_util import walk_directory_metadata, sha256_file
+
+
+MTIME_TOLERANCE = 2  # segundos
 
 
 class EngineSync:
-    # <======================================= INICIAR OBJETO =======================================>
+    # <======================================= INIT =======================================>
     def __init__(self, pc_root: Path, usb_root: Path, db_name: str):
         self.machine_name = socket.gethostname()
         self.pc_root = pc_root.resolve()
@@ -24,292 +27,231 @@ class EngineSync:
             self.pc_root,
             self.usb_root,
         )
-        self.logger.debug(
-            "Paths resueltos | pc_root=%s | usb_root=%s",
-            self.pc_root,
-            self.usb_root,
-        )
 
-    # <======================================= FASE 1: SINC DESDE USB =======================================>
+    # <======================================= FASE 1 =======================================>
     def replicate_master(self):
         self.logger.info("FASE 1: replicando estado desde USB")
 
-        with self.db.get_db_connection(self.db.usb_path) as usb_conn:
-            if self.db.table_is_empty(usb_conn, "master_states"):
-                self.logger.info("FASE 1 | USB con master_states vacio")
-                return
-            primary_master = self.db.read_states(usb_conn)
-            primary_tombstones = self.db.read_tombstones(usb_conn)
-
-        with self.db.get_db_connection(self.db.pc_path) as pc_conn:
-            if self.db.table_is_empty(pc_conn, "master_states"):
-                self.logger.warning("FASE 1 | PC con master_states vacio")
-                return
-            secundary_master = self.db.read_states(pc_conn)
-
-        if primary_master:
-            if secundary_master:
-                pc_index = {m["init_hash"]: m for m in secundary_master}
-                usb_index = {m["init_hash"]: m for m in primary_master}
-                tombstones_index = {m["init_hash"]: m for m in primary_tombstones}
-
-                pc_hashes = set(pc_index)
-                usb_hashes = set(usb_index)
-
-                all_hashes = pc_hashes | usb_hashes  # (- .db)'s ?
-
-                for h in all_hashes:
-                    pc = pc_index.get(h)
-                    usb = usb_index.get(h)
-
-                    self.logger.debug(
-                        "Evaluando archivo | hash=%s | pc=%s | usb=%s",
-                        h,
-                        bool(pc),
-                        bool(usb),
-                    )
-
-                    src = self.usb_root / usb["rel_path"]
-                    dst = self.pc_root / src.relative_to(self.usb_root)
-
-                    # 1 Está en USB y NO en PC → copiar a PC
-                    if usb and not pc:
-                        self.logger.info("COPY USB → PC | %s", usb["rel_path"])
-                        FSOps.copy_file(src, dst)
-                        continue
-
-                    # 2 Está en PC y NO en USB → borrar en PC
-                    if pc and not usb:
-                        if tombstones_index.get(h):
-                            self.logger.info(
-                                "DELETE en PC (tombstone) | %s", pc["rel_path"]
-                            )
-                            dst = self.pc_root / pc["rel_path"]
-                            FSOps.delete_file(dst)
-                        continue
-
-                    # 3 Está en ambos → comparar
-                    if usb and pc:
-                        # 3.1 Movido (mismo hash, distinto path, mismo contenido)
-                        if (
-                            usb["rel_path"] != pc["rel_path"]
-                            and usb["mtime"] == pc["mtime"]
-                        ):
-                            self.logger.info(
-                                "MOVE detectado | %s → %s",
-                                pc["rel_path"],
-                                usb["rel_path"],
-                            )
-                            src = self.pc_root / pc["rel_path"]
-                            FSOps.move_file(src, dst)
-                            continue
-
-                        # 3.2 USB más reciente → copiar
-                        if (
-                            usb["mtime"] > pc["mtime"]
-                            and usb["content_hash"] != pc["content_hash"]
-                        ):
-                            self.logger.info("UPDATE desde USB | %s", usb["rel_path"])
-                            FSOps.copy_file(src, dst)
-                            continue
-
-                        # 3.3 Iguales o es un NUEVO archivo solo en pc → no hacer nada
-
-            else:
-                self.logger.warning("PC sin master_states, posible primera ejecución")
-                for usb_file in primary_master:
-                    src = self.usb_root / usb_file["rel_path"]
-                    dst = self.pc_root / src.relative_to(self.usb_root)
-                    FSOps.copy_file(src, dst)
-        else:
+        primary_master, primary_tombstones = self._read_usb_master()
+        if not primary_master:
             self.logger.info("USB sin master_states, salto replicación")
+            return
 
-    # <======================================= FASE 2: OBTENER DATOS DE CAMBIOS =======================================>
+        secundary_master = self._read_pc_master()
+        if not secundary_master:
+            self.logger.warning("PC sin master_states, posible primera ejecución")
+            self._initial_usb_copy(primary_master)
+            return
+
+        self._sync_usb_to_pc(primary_master, secundary_master, primary_tombstones)
+
+    def _read_usb_master(self):
+        with self.db.get_db_connection(self.db.usb_path) as conn:
+            if self.db.table_is_empty(conn, "master_states"):
+                return [], []
+            return self.db.read_states(conn), self.db.read_tombstones(conn)
+
+    def _read_pc_master(self):
+        with self.db.get_db_connection(self.db.pc_path) as conn:
+            if self.db.table_is_empty(conn, "master_states"):
+                return []
+            return self.db.read_states(conn)
+
+    def _initial_usb_copy(self, usb_master):
+        for entry in usb_master:
+            src = self.usb_root / entry["rel_path"]
+            dst = self.pc_root / entry["rel_path"]
+            FSOps.copy_file(src, dst)
+
+    def _sync_usb_to_pc(self, usb_master, pc_master, tombstones):
+        pc_index = {m["init_hash"]: m for m in pc_master}
+        usb_index = {m["init_hash"]: m for m in usb_master}
+        tombstone_index = {m["init_hash"]: m for m in tombstones}
+
+        for h in pc_index.keys() | usb_index.keys():
+            pc = pc_index.get(h)
+            usb = usb_index.get(h)
+
+            if usb and not pc:
+                self._copy_usb_to_pc(usb)
+            elif pc and not usb:
+                self._delete_pc_if_tombstone(pc, tombstone_index)
+            else:
+                self._resolve_conflict(pc, usb)
+
+    def _copy_usb_to_pc(self, usb):
+        self.logger.info("COPY USB → PC | %s", usb["rel_path"])
+        src = self.usb_root / usb["rel_path"]
+        dst = self.pc_root / usb["rel_path"]
+        FSOps.copy_file(src, dst)
+
+    def _delete_pc_if_tombstone(self, pc, tombstones):
+        if pc["init_hash"] in tombstones:
+            self.logger.info("DELETE en PC (tombstone) | %s", pc["rel_path"])
+            FSOps.delete_file(self.pc_root / pc["rel_path"])
+
+    def _resolve_conflict(self, pc, usb):
+        src_usb = self.usb_root / usb["rel_path"]
+        dst_pc = self.pc_root / usb["rel_path"]
+
+        if usb["rel_path"] != pc["rel_path"] and usb["mtime"] == pc["mtime"]:
+            self.logger.info(
+                "MOVE detectado | %s → %s", pc["rel_path"], usb["rel_path"]
+            )
+            FSOps.move_file(self.pc_root / pc["rel_path"], dst_pc)
+            return
+
+        if usb["mtime"] > pc["mtime"] and usb["content_hash"] != pc["content_hash"]:
+            self.logger.info("UPDATE desde USB | %s", usb["rel_path"])
+            FSOps.copy_file(src_usb, dst_pc)
+
+    # <======================================= FASE 2 =======================================>
     def get_movements(self):
-        """
-        Compara el estado actual del filesystem con el estado guardado en la DB
-        y registra los movimientos (CREATE / MODIFY / MOVE / DELETE).
-        """
         self.logger.info("FASE 2 | Escaneando filesystem para detectar cambios")
 
         directory_tree = walk_directory_metadata(self.pc_root)
 
-        with self.db.get_db_connection(self.db.pc_path) as pc_conn:
-            if self.db.table_is_empty(pc_conn, "master_states"):
-                self.logger.warning(
-                    "FASE 2 | No hay master_states, no se pueden detectar movimientos"
-                )
+        with self.db.get_db_connection(self.db.pc_path) as conn:
+            if self.db.table_is_empty(conn, "master_states"):
+                self.logger.warning("FASE 2 | No hay master_states")
                 return
-            secundary_master = self.db.read_states(pc_conn)
-            master_paths_index = {m["rel_path"]: m for m in secundary_master}
-            master_hashs_index = {m["content_hash"]: m for m in secundary_master}
+            master = self.db.read_states(conn)
+
+        paths_index = {m["rel_path"]: m for m in master}
+        hash_index = {m["content_hash"]: m for m in master}
 
         with self.db.get_db_connection(self.db.temp_path) as temp_conn:
-            for rel_path, (size, mtime, hash_or_none) in directory_tree.items():
-                self.logger.debug(
-                    "FS ENTRY | path=%s size=%s mtime=%s hash=%s",
-                    rel_path,
-                    size,
-                    mtime,
-                    hash_or_none,
-                )
+            self._detect_fs_changes(directory_tree, paths_index, hash_index, temp_conn)
+            self._detect_deletes(directory_tree, paths_index, temp_conn)
 
-                # Trato todo el contenido FS
-                db_entry = master_paths_index.get(rel_path)
-                if db_entry is None:
-                    # NUEVA ENTRADA
-                    current_hash = sha256_file(self.pc_root / rel_path)
-                    db_entry = master_hashs_index.get(current_hash)
-                    if db_entry is None:
-                        self.logger.info(
-                            "FASE 2 | CREATE detectado | %s",
-                            rel_path,
-                        )
-                        novedad = {
-                            "op_type": "CREATE",
-                            "init_hash": current_hash,
-                            "rel_path": rel_path,
-                            "new_rel_path": None,
-                            "content_hash": current_hash,
-                            "size_bytes": size,
-                            "last_op_time": mtime,
-                            "machine_name": self.machine_name,
-                        }
-                        self.db.upsert_movement(temp_conn, novedad)
-                    else:
-                        # Movido sin ser modificado
-                        self.logger.info(
-                            "FASE 2 | MOVE detectado | %s → %s",
-                            db_entry["rel_path"],
-                            rel_path,
-                        )
-                        novedad = {
-                            "op_type": "MOVE",
-                            "init_hash": db_entry["init_hash"],
-                            "rel_path": db_entry["rel_path"],
-                            "new_rel_path": rel_path,
-                            "content_hash": current_hash,
-                            "size_bytes": size,
-                            "last_op_time": mtime,
-                            "machine_name": self.machine_name,
-                        }
-                        self.db.upsert_movement(temp_conn, novedad)
+    def _detect_fs_changes(self, tree, paths_index, hash_index, conn):
+        for rel_path, (size, mtime, _) in tree.items():
+            db_entry = paths_index.get(rel_path)
 
-                else:
-                    # LA ENTRADA YA EXISTE
-                    MTIME_TOLERANCE = 2  # segundos
-                    if (
-                        db_entry["size_bytes"] == size
-                        and abs(db_entry["last_op_time"] - mtime) <= MTIME_TOLERANCE
-                    ):
-                        pass
-                        # asumir que no cambió
-                    else:
-                        current_hash = sha256_file(self.pc_root / rel_path)
-                        if db_entry["content_hash"] != current_hash:
-                            self.logger.info(
-                                "FASE 2 | MODIFY detectado | %s",
-                                rel_path,
-                            )
-                            novedad = {
-                                "op_type": "MODIFY",
-                                "init_hash": db_entry["init_hash"],
-                                "rel_path": rel_path,
-                                "new_rel_path": None,
-                                "content_hash": current_hash,
-                                "size_bytes": size,
-                                "last_op_time": mtime,
-                                "machine_name": self.machine_name,
-                            }
-                            self.db.upsert_movement(temp_conn, novedad)
+            if not db_entry:
+                self._handle_new_entry(rel_path, size, mtime, hash_index, conn)
+            else:
+                self._handle_existing_entry(rel_path, size, mtime, db_entry, conn)
 
-            # Archivos eliminados: existen en DB pero no en filesystem
-            deleted_paths = master_paths_index.keys() - directory_tree.keys()
+    def _handle_new_entry(self, rel_path, size, mtime, hash_index, conn):
+        current_hash = sha256_file(self.pc_root / rel_path)
+        previous = hash_index.get(current_hash)
 
-            for path in deleted_paths:
-                db_entry = master_paths_index.get(path)
-                self.logger.info(
-                    "FASE 2 | DELETE detectado | %s",
-                    path,
-                )
-                novedad = {
-                    "op_type": "DELETE",
+        if not previous:
+            op = "CREATE"
+            rel_old = None
+            init_hash = current_hash
+        else:
+            op = "MOVE"
+            rel_old = previous["rel_path"]
+            init_hash = previous["init_hash"]
+
+        self.logger.info("FASE 2 | %s detectado | %s", op, rel_path)
+
+        self.db.upsert_movement(
+            conn,
+            {
+                "op_type": op,
+                "init_hash": init_hash,
+                "rel_path": rel_old or rel_path,
+                "new_rel_path": rel_path if op == "MOVE" else None,
+                "content_hash": current_hash,
+                "size_bytes": size,
+                "last_op_time": mtime,
+                "machine_name": self.machine_name,
+            },
+        )
+
+    def _handle_existing_entry(self, rel_path, size, mtime, db_entry, conn):
+        if (
+            db_entry["size_bytes"] == size
+            and abs(db_entry["last_op_time"] - mtime) <= MTIME_TOLERANCE
+        ):
+            return
+
+        current_hash = sha256_file(self.pc_root / rel_path)
+        if current_hash != db_entry["content_hash"]:
+            self.logger.info("FASE 2 | MODIFY detectado | %s", rel_path)
+            self.db.upsert_movement(
+                conn,
+                {
+                    "op_type": "MODIFY",
                     "init_hash": db_entry["init_hash"],
-                    "rel_path": db_entry["rel_path"],
+                    "rel_path": rel_path,
                     "new_rel_path": None,
-                    "content_hash": db_entry["content_hash"],
-                    "size_bytes": db_entry["size_bytes"],
+                    "content_hash": current_hash,
+                    "size_bytes": size,
+                    "last_op_time": mtime,
+                    "machine_name": self.machine_name,
+                },
+            )
+
+    def _detect_deletes(self, tree, paths_index, conn):
+        for rel_path in paths_index.keys() - tree.keys():
+            entry = paths_index[rel_path]
+            self.logger.info("FASE 2 | DELETE detectado | %s", rel_path)
+
+            self.db.upsert_movement(
+                conn,
+                {
+                    "op_type": "DELETE",
+                    "init_hash": entry["init_hash"],
+                    "rel_path": rel_path,
+                    "new_rel_path": None,
+                    "content_hash": entry["content_hash"],
+                    "size_bytes": entry["size_bytes"],
                     "last_op_time": time.time(),
                     "machine_name": self.machine_name,
-                }
-                self.db.upsert_movement(temp_conn, novedad)
+                },
+            )
 
-    # <======================================= FASE 3: APLICAR CAMBIOS Y SYNC =======================================>
+    # <======================================= FASE 3 =======================================>
     def apply_movements(self):
         self.logger.info("FASE 3 | Aplicando movimientos y sincronizando USB")
 
-        # trabajo sobre una db temp (copia de db local)
-        with self.db.get_db_connection(self.db.temp_path) as temp_conn:
-            if self.db.table_is_empty(temp_conn, "movements"):
+        with self.db.get_db_connection(self.db.temp_path) as conn:
+            if self.db.table_is_empty(conn, "movements"):
                 self.logger.info("FASE 3 | No hay movimientos pendientes")
                 return
-            movements = self.db.read_movements(temp_conn)
 
-            master = self.db.read_states(temp_conn)
-            master_paths = {m["rel_path"] for m in master}
-            current = CurrentState(master_paths)
+            movements = self.db.read_movements(conn)
+            master = self.db.read_states(conn)
+            current = CurrentState({m["rel_path"] for m in master})
 
             for mov in movements:
-                if not MovementRules.can_apply(mov, current._paths):
-                    self.logger.warning(
-                        "FASE 3 | Movimiento omitido por reglas | op=%s path=%s",
-                        mov["op_type"],
-                        mov["rel_path"],
-                    )
-                    continue  # Omito lo que sigue por conflicto en reglas
+                self._apply_single_movement(mov, current, conn)
 
-                src = self.pc_root / mov["rel_path"]
-                dst = self.usb_root / src.relative_to(self.pc_root)
+    def _apply_single_movement(self, mov, current, conn):
+        if not MovementRules.can_apply(mov, current._paths):
+            self.logger.warning(
+                "FASE 3 | Movimiento omitido | op=%s path=%s",
+                mov["op_type"],
+                mov["rel_path"],
+            )
+            return
 
-                # APLICAR NOVEDAD FS
-                op = mov["op_type"]
+        try:
+            self._apply_fs_operation(mov)
+            self.db.update_state(conn, mov)
+            self.db.archive_and_delete_movement(conn, mov)
 
-                if op == "CREATE":
-                    # Validar .sha256_file en Destino, Si IGUALES -> VALIDADO
-                    try:
-                        FSOps.copy_file(src, dst)
-                    except FileNotFoundError:
-                        self.logger.warning(f"No se pudo copiar (no existe): {src}")
-                    except Exception as e:
-                        self.logger.error(f"Error copiando {src}: {e}")
+            self.logger.info(
+                "FASE 3 | Movimiento aplicado | op=%s path=%s",
+                mov["op_type"],
+                mov["rel_path"],
+            )
+        except Exception as e:
+            self.logger.error("Error aplicando movimiento %s: %s", mov, e)
 
-                elif op == "MODIFY":
-                    try:
-                        FSOps.copy_file(src, dst)
-                    except FileNotFoundError:
-                        self.logger.warning(f"No se pudo copiar (no existe): {src}")
-                    except Exception as e:
-                        self.logger.error(f"Error copiando {src}: {e}")
+    def _apply_fs_operation(self, mov):
+        src = self.pc_root / mov["rel_path"]
+        dst = self.usb_root / mov["rel_path"]
 
-                elif op == "MOVE":
-                    dst = self.usb_root / mov["new_rel_path"]
-                    FSOps.move_file(src, dst)
-                    # Validar .exist en new_rel, Si EXISTE -> VALIDADO
-
-                elif op == "DELETE":
-                    FSOps.delete_file(dst)
-                    # Validar NO(.exist) en rel_path -> Si NO EXISTE -> VALIDADO
-
-                else:
-                    raise ValueError(f"Operación desconocida: {op}")
-                # if VALIDADO:
-                # APLICAR NOVEDADES DB
-                self.db.update_state(temp_conn, mov)
-                self.db.archive_and_delete_movement(temp_conn, mov)
-                self.logger.info(
-                    "FASE 3 | Movimiento aplicado correctamente | op=%s path=%s",
-                    op,
-                    mov["rel_path"],
-                )
-
-            # lista en memoria vacia significa que no hubo errores
+        if mov["op_type"] in {"CREATE", "MODIFY"}:
+            FSOps.copy_file(src, dst)
+        elif mov["op_type"] == "MOVE":
+            FSOps.move_file(src, self.usb_root / mov["new_rel_path"])
+        elif mov["op_type"] == "DELETE":
+            FSOps.delete_file(dst)
+        else:
+            raise ValueError(f"Operación desconocida: {mov['op_type']}")

@@ -124,7 +124,7 @@ def test_update_state_delete(db, conn):
     assert tomb["init_hash"] == "h1"
 
 
-def test_upsert_movements(db, conn):
+def test_upsert_movement(db, conn):
     mov = {
         "id": "1",
         "op_type": "CREATE",
@@ -137,7 +137,7 @@ def test_upsert_movements(db, conn):
         "machine_name": "pc1",
     }
 
-    db.upsert_movements(conn, mov)
+    db.upsert_movement(conn, mov)
 
     row = conn.execute("SELECT * FROM movements WHERE id='1'").fetchone()
 

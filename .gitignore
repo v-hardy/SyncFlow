@@ -1,5 +1,6 @@
 .venv/
 __pycache__/
 ejemplo_full-read/
+*.bkp
 *.pyc
 *.egg-info/
