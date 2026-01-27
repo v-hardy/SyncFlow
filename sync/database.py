@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 import time
 import logging
-from fs_util import FSOps
+from sync.fs_util import FSOps
 
 
 class DB:
@@ -174,7 +174,7 @@ class DB:
                     content_hash   = ?,
                     size_bytes     = ?,
                     last_op_time   = ?,
-                    last_machine   = ?
+                    machine_name   = ?
                 WHERE rel_path = ?
                 """,
                 (
@@ -237,15 +237,14 @@ class DB:
                 id, 
                 op_type, 
                 init_hash, 
-                rel_path, n
-                ew_rel_path,
+                rel_path, 
+                new_rel_path,
                 content_hash, 
                 size_bytes,
                 last_op_time, 
-                machine_name, 
-                applied_time
+                machine_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 mov["id"],
@@ -257,7 +256,6 @@ class DB:
                 mov["size_bytes"],
                 mov["last_op_time"],
                 mov["machine_name"],
-                int(time.time()),
             ),
         )
 
