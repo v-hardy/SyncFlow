@@ -231,40 +231,74 @@ class DB:
             self.logger.warning("Operación desconocida: %s", op)
 
     def upsert_movement(self, conn, mov: dict):
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO movements (
-                id, 
-                op_type, 
-                init_hash, 
-                rel_path, 
-                new_rel_path,
-                content_hash, 
-                size_bytes,
-                last_op_time, 
-                machine_name
+        # Si se proporciona id, hacer INSERT OR REPLACE, si no, dejar que AUTOINCREMENT lo genere
+        if "id" in mov and mov["id"] is not None:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO movements (
+                    id, 
+                    op_type, 
+                    init_hash, 
+                    rel_path, 
+                    new_rel_path,
+                    content_hash, 
+                    size_bytes,
+                    last_op_time, 
+                    machine_name
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mov["id"],
+                    mov["op_type"],
+                    mov["init_hash"],
+                    mov["rel_path"],
+                    mov["new_rel_path"],
+                    mov["content_hash"],
+                    mov["size_bytes"],
+                    mov["last_op_time"],
+                    mov["machine_name"],
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
+            
+            self.logger.debug(
+                "Movement UPSERT | id=%s | op=%s | init_hash=%s",
                 mov["id"],
                 mov["op_type"],
                 mov["init_hash"],
-                mov["rel_path"],
-                mov["new_rel_path"],
-                mov["content_hash"],
-                mov["size_bytes"],
-                mov["last_op_time"],
-                mov["machine_name"],
-            ),
-        )
-
-        self.logger.debug(
-            "Movement UPSERT | id=%s | op=%s | init_hash=%s",
-            mov["id"],
-            mov["op_type"],
-            mov["init_hash"],
-        )
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO movements (
+                    op_type, 
+                    init_hash, 
+                    rel_path, 
+                    new_rel_path,
+                    content_hash, 
+                    size_bytes,
+                    last_op_time, 
+                    machine_name
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mov["op_type"],
+                    mov["init_hash"],
+                    mov["rel_path"],
+                    mov["new_rel_path"],
+                    mov["content_hash"],
+                    mov["size_bytes"],
+                    mov["last_op_time"],
+                    mov["machine_name"],
+                ),
+            )
+            
+            self.logger.debug(
+                "Movement INSERT | op=%s | init_hash=%s",
+                mov["op_type"],
+                mov["init_hash"],
+            )
 
     # <======================================= ARCHIVA =======================================>
     def archive_and_delete_movement(self, conn, mov: dict):

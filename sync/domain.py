@@ -16,18 +16,19 @@ class MovementRules:
         )
 
         if op == "CREATE":
-            return not current_state_in_master.exists(mov["new_rel_path"])
+            return mov["rel_path"] not in current_state_in_master
 
         elif op == "MODIFY":
-            return current_state_in_master.exists(mov["rel_path"])
+            return mov["rel_path"] in current_state_in_master
 
         elif op == "MOVE":
-            return current_state_in_master.exists(
-                mov["rel_path"]
-            ) and not current_state_in_master.exists(mov["new_rel_path"])
+            return (
+                mov["rel_path"] in current_state_in_master
+                and mov["new_rel_path"] not in current_state_in_master
+            )
 
         elif op == "DELETE":
-            return current_state_in_master.exists(mov["rel_path"])
+            return mov["rel_path"] in current_state_in_master
 
         else:
             logger.debug("Operación desconocida: %s", op)

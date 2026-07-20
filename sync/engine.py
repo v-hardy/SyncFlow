@@ -62,6 +62,26 @@ class EngineSync:
             src = self.usb_root / entry["rel_path"]
             dst = self.pc_root / entry["rel_path"]
             FSOps.copy_file(src, dst)
+        
+        # Inicializar master_states en PC después de copiar archivos
+        with self.db.get_db_connection(self.db.pc_path) as conn:
+            for entry in usb_master:
+                conn.execute(
+                    """
+                    INSERT INTO master_states 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry["init_hash"],
+                        entry["rel_path"],
+                        entry["content_hash"],
+                        entry["size_bytes"],
+                        entry["last_op_time"],
+                        entry["machine_name"],
+                    )
+                )
+            conn.commit()
+            self.logger.info("Inicializados %d registros en master_states de PC", len(usb_master))
 
     def _sync_usb_to_pc(self, usb_master, pc_master, tombstones):
         pc_index = {m["init_hash"]: m for m in pc_master}
@@ -78,6 +98,47 @@ class EngineSync:
                 self._delete_pc_if_tombstone(pc, tombstone_index)
             else:
                 self._resolve_conflict(pc, usb)
+        
+        # Actualizar master_states en PC después de sincizar
+        with self.db.get_db_connection(self.db.pc_path) as conn:
+            # Primero limpiar master_states existentes
+            conn.execute("DELETE FROM master_states")
+            
+            # Luego insertar los estados desde USB
+            for entry in usb_master:
+                conn.execute(
+                    """
+                    INSERT INTO master_states 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry["init_hash"],
+                        entry["rel_path"],
+                        entry["content_hash"],
+                        entry["size_bytes"],
+                        entry["last_op_time"],
+                        entry["machine_name"],
+                    )
+                )
+            
+            # También actualizar tombstones
+            conn.execute("DELETE FROM tombstones")
+            for tomb in tombstones:
+                conn.execute(
+                    """
+                    INSERT INTO tombstones 
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        tomb["init_hash"],
+                        tomb["content_hash"],
+                        tomb["deleted_at"],
+                        tomb["machine_name"],
+                    )
+                )
+            
+            conn.commit()
+            self.logger.info("Actualizados master_states en PC desde USB")
 
     def _copy_usb_to_pc(self, usb):
         self.logger.info("COPY USB → PC | %s", usb["rel_path"])
@@ -94,14 +155,14 @@ class EngineSync:
         src_usb = self.usb_root / usb["rel_path"]
         dst_pc = self.pc_root / usb["rel_path"]
 
-        if usb["rel_path"] != pc["rel_path"] and usb["mtime"] == pc["mtime"]:
+        if usb["rel_path"] != pc["rel_path"] and usb["last_op_time"] == pc["last_op_time"]:
             self.logger.info(
                 "MOVE detectado | %s → %s", pc["rel_path"], usb["rel_path"]
             )
             FSOps.move_file(self.pc_root / pc["rel_path"], dst_pc)
             return
 
-        if usb["mtime"] > pc["mtime"] and usb["content_hash"] != pc["content_hash"]:
+        if usb["last_op_time"] > pc["last_op_time"] and usb["content_hash"] != pc["content_hash"]:
             self.logger.info("UPDATE desde USB | %s", usb["rel_path"])
             FSOps.copy_file(src_usb, dst_pc)
 
@@ -209,6 +270,9 @@ class EngineSync:
     def apply_movements(self):
         self.logger.info("FASE 3 | Aplicando movimientos y sincronizando USB")
 
+        # Sincronizar master_states desde PC a temp DB
+        self._sync_master_to_temp()
+
         with self.db.get_db_connection(self.db.temp_path) as conn:
             if self.db.table_is_empty(conn, "movements"):
                 self.logger.info("FASE 3 | No hay movimientos pendientes")
@@ -220,6 +284,34 @@ class EngineSync:
 
             for mov in movements:
                 self._apply_single_movement(mov, current, conn)
+
+    def _sync_master_to_temp(self):
+        """Copia master_states desde PC DB a temp DB"""
+        with self.db.get_db_connection(self.db.pc_path) as pc_conn:
+            master = self.db.read_states(pc_conn)
+            
+        with self.db.get_db_connection(self.db.temp_path) as temp_conn:
+            # Limpiar master_states existentes
+            temp_conn.execute("DELETE FROM master_states")
+            
+            # Copiar desde PC
+            for entry in master:
+                temp_conn.execute(
+                    """
+                    INSERT INTO master_states 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry["init_hash"],
+                        entry["rel_path"],
+                        entry["content_hash"],
+                        entry["size_bytes"],
+                        entry["last_op_time"],
+                        entry["machine_name"],
+                    )
+                )
+            temp_conn.commit()
+            self.logger.debug("Sincronizados %d registros a temp DB", len(master))
 
     def _apply_single_movement(self, mov, current, conn):
         if not MovementRules.can_apply(mov, current._paths):

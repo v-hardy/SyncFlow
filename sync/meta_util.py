@@ -36,6 +36,11 @@ def walk_directory_metadata(root: Path) -> dict[str, tuple[int, float, str | Non
         for file_path in root.rglob("*"):
             # .rglob("*") es un método recursivo que busca todos los elementos (archivos y subdirectorios). Es equivalente a glob("**/*", recursive=True), pero usando el estilo de pathlib.
             if file_path.is_file():
+                # Excluir directorios ocultos de sincronización
+                if any(part.startswith('.') for part in file_path.parts):
+                    logger.debug("Ignorando archivo oculto: %s", file_path)
+                    continue
+                    
                 # .is_file(): Filtra solo los archivos reales (excluye directorios, enlaces simbólicos que apunten a directorios, etc.). Ignora carpetas vacías o subdirectorios.
                 rel_path = str(
                     file_path.relative_to(root).as_posix()

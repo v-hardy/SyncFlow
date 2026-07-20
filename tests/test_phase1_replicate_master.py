@@ -11,7 +11,7 @@ def test_phase1_copy_from_usb(tmp_path):
                 {
                     "init_hash": "abc",
                     "rel_path": "file.txt",
-                    "mtime": 10,
+                    "last_op_time": 10,
                     "content_hash": "hash1",
                 }
             ],

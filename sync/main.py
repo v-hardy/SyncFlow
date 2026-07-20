@@ -6,8 +6,8 @@ import traceback
 from pathlib import Path
 import logging
 
-from engine import EngineSync
-from dry_run import dry_run
+from sync.engine import EngineSync
+from sync.dry_run import dry_run
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def main():
         # ==================================================
         if args.dry_run:
             logger.info("Ejecutando DRY-RUN")
-            dry_run()
+            dry_run(engine, logger.info)
             logger.info("DRY-RUN finalizado. No se aplicaron cambios.")
             return
 

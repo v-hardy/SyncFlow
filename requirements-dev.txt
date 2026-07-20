@@ -11,5 +11,6 @@ platformdirs==4.5.1
 pre_commit==4.5.1
 pytokens==0.3.0
 PyYAML==6.0.3
+pytest==8.0.0
 ruff==0.14.11
 virtualenv==20.36.1
