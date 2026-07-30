@@ -34,14 +34,17 @@ args, extra = parser.parse_known_args()
 # ====================================
 python_cmd = sys.executable  # usa el mismo intérprete que este script
 
-main_py_path = Path(__file__).parent / "sync" / "main.py"
-if not main_py_path.exists():
-    print(f"Error: no se encontró {main_py_path}")
+# Verificar que existe el directorio sync
+sync_dir = Path(__file__).parent / "sync"
+if not sync_dir.exists():
+    print(f"Error: no se encontró {sync_dir}")
     sys.exit(1)
 
+# Ejecutar como módulo para resolver problemas de importación
 cmd = [
     python_cmd,
-    str(main_py_path),
+    "-m",
+    "sync.main",
     "--pc-root",
     str(args.pc_root),
     "--usb-root",
@@ -61,9 +64,13 @@ cmd += extra
 # ====================================
 # Ejecutar main.py
 # ====================================
+# Añadir el directorio padre al PYTHONPATH para resolver importaciones
+env = dict(subprocess.os.environ)
+env["PYTHONPATH"] = str(Path(__file__).parent) + ":" + env.get("PYTHONPATH", "")
+
 print(f"Ejecutando comando:\n{' '.join(cmd)}\n")
 
-result = subprocess.run(cmd)
+result = subprocess.run(cmd, env=env)
 
 # Retornar mismo código de salida que main.py
 sys.exit(result.returncode)
