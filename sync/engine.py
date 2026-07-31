@@ -92,6 +92,7 @@ class EngineSync:
     def _initialize_from_pc(self):
         """Inicializa master_states desde el estado actual del PC cuando no hay datos previos"""
         from sync.meta_util import walk_directory_metadata, sha256_file
+        import hashlib
         
         directory_tree = walk_directory_metadata(self.pc_root)
         
@@ -99,7 +100,11 @@ class EngineSync:
             for rel_path, (size, mtime, _) in directory_tree.items():
                 file_path = self.pc_root / rel_path
                 content_hash = sha256_file(file_path)
-                init_hash = content_hash  # Para archivos nuevos, init_hash = content_hash
+                
+                # Generar init_hash único combinando content_hash y rel_path
+                # Esto evita conflictos cuando hay archivos con el mismo contenido
+                init_hash_input = f"{content_hash}:{rel_path}".encode('utf-8')
+                init_hash = hashlib.sha256(init_hash_input).hexdigest()
                 
                 conn.execute(
                     """
