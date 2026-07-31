@@ -33,11 +33,17 @@ class EngineSync:
         self.logger.info("FASE 1: replicando estado desde USB")
 
         primary_master, primary_tombstones = self._read_usb_master()
+        secundary_master = self._read_pc_master()
+
+        if not primary_master and not secundary_master:
+            self.logger.info("Sin master_states en ninguna parte, inicializando desde PC")
+            self._initialize_from_pc()
+            return
+
         if not primary_master:
             self.logger.info("USB sin master_states, salto replicación")
             return
 
-        secundary_master = self._read_pc_master()
         if not secundary_master:
             self.logger.warning("PC sin master_states, posible primera ejecución")
             self._initial_usb_copy(primary_master)
@@ -82,6 +88,35 @@ class EngineSync:
                 )
             conn.commit()
             self.logger.info("Inicializados %d registros en master_states de PC", len(usb_master))
+
+    def _initialize_from_pc(self):
+        """Inicializa master_states desde el estado actual del PC cuando no hay datos previos"""
+        from sync.meta_util import walk_directory_metadata, sha256_file
+        
+        directory_tree = walk_directory_metadata(self.pc_root)
+        
+        with self.db.get_db_connection(self.db.pc_path) as conn:
+            for rel_path, (size, mtime, _) in directory_tree.items():
+                file_path = self.pc_root / rel_path
+                content_hash = sha256_file(file_path)
+                init_hash = content_hash  # Para archivos nuevos, init_hash = content_hash
+                
+                conn.execute(
+                    """
+                    INSERT INTO master_states 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        init_hash,
+                        rel_path,
+                        content_hash,
+                        size,
+                        mtime,
+                        self.machine_name,
+                    )
+                )
+            conn.commit()
+            self.logger.info("Inicializados %d registros en master_states desde PC", len(directory_tree))
 
     def _sync_usb_to_pc(self, usb_master, pc_master, tombstones):
         pc_index = {m["init_hash"]: m for m in pc_master}
