@@ -96,6 +96,8 @@ class EngineSync:
         
         directory_tree = walk_directory_metadata(self.pc_root)
         
+        # Generar movimientos de CREATE para todos los archivos en PC
+        # NO crear master_states directamente, dejar que la FASE 3 los cree al aplicar los movimientos
         with self.db.get_db_connection(self.db.pc_path) as conn:
             for rel_path, (size, mtime, _) in directory_tree.items():
                 file_path = self.pc_root / rel_path
@@ -106,22 +108,22 @@ class EngineSync:
                 init_hash_input = f"{content_hash}:{rel_path}".encode('utf-8')
                 init_hash = hashlib.sha256(init_hash_input).hexdigest()
                 
-                conn.execute(
-                    """
-                    INSERT INTO master_states 
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        init_hash,
-                        rel_path,
-                        content_hash,
-                        size,
-                        mtime,
-                        self.machine_name,
-                    )
+                # Crear movimiento de CREATE
+                self.db.upsert_movement(
+                    conn,
+                    {
+                        "op_type": "CREATE",
+                        "init_hash": init_hash,
+                        "rel_path": rel_path,
+                        "new_rel_path": None,
+                        "content_hash": content_hash,
+                        "size_bytes": size,
+                        "last_op_time": mtime,
+                        "machine_name": self.machine_name,
+                    },
                 )
             conn.commit()
-            self.logger.info("Inicializados %d registros en master_states desde PC", len(directory_tree))
+            self.logger.info("Generados %d movimientos CREATE desde PC", len(directory_tree))
 
     def _sync_usb_to_pc(self, usb_master, pc_master, tombstones):
         pc_index = {m["init_hash"]: m for m in pc_master}
@@ -313,6 +315,14 @@ class EngineSync:
         # Sincronizar master_states desde PC a temp DB
         self._sync_master_to_temp()
 
+        # Verificar si hay movimientos en PC DB (caso de inicialización)
+        with self.db.get_db_connection(self.db.pc_path) as pc_conn:
+            if not self.db.table_is_empty(pc_conn, "movements"):
+                self.logger.info("FASE 3 | Procesando movimientos desde PC DB (inicialización)")
+                self._process_movements_from_db(pc_conn)
+                return
+
+        # Procesar movimientos desde temp DB (caso normal)
         with self.db.get_db_connection(self.db.temp_path) as conn:
             if self.db.table_is_empty(conn, "movements"):
                 self.logger.info("FASE 3 | No hay movimientos pendientes")
@@ -325,9 +335,23 @@ class EngineSync:
             for mov in movements:
                 self._apply_single_movement(mov, current, conn)
 
+    def _process_movements_from_db(self, conn):
+        """Procesa movimientos desde una conexión de base de datos específica"""
+        movements = self.db.read_movements(conn)
+        
+        # Como no hay master_states en caso de inicialización, current_state está vacío
+        current = CurrentState(set())
+        
+        for mov in movements:
+            self._apply_single_movement(mov, current, conn)
+
     def _sync_master_to_temp(self):
         """Copia master_states desde PC DB a temp DB"""
         with self.db.get_db_connection(self.db.pc_path) as pc_conn:
+            if self.db.table_is_empty(pc_conn, "master_states"):
+                self.logger.debug("No hay master_states en PC para sincronizar a temp DB")
+                return
+                
             master = self.db.read_states(pc_conn)
             
         with self.db.get_db_connection(self.db.temp_path) as temp_conn:
