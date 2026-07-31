@@ -67,6 +67,15 @@ class FSOps:
         try:
             FSOps.ensure_parent(dst)
             src.rename(dst)
+        except OSError as e:
+            # Si falla por cross-device link (diferentes filesystems), usar copia + eliminación
+            if e.errno == 18:  # EXDEV - Invalid cross-device link
+                logger.info("Cross-device link detectado, usando copia + eliminación: %s → %s", src, dst)
+                shutil.copy2(src, dst)
+                src.unlink()
+            else:
+                logger.exception("Error moviendo archivo: %s → %s", src, dst)
+                raise
         except Exception:
             logger.exception("Error moviendo archivo: %s → %s", src, dst)
             raise
